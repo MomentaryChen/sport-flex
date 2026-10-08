@@ -47,6 +47,8 @@ class ChangjiaProvider(Provider):
 
     def login(self, code: str) -> dict:
         page = self.page
+        if not page.locator("#verification_code").count():
+            return {"ok": False, "message": "驗證碼已過期，請重新取得"}
         page.locator("#verification_code").fill(code.strip())
         with page.expect_response(lambda response: "ajax/login.php" in response.url, timeout=30_000) as info:
             page.locator("input.btn-login").click()
