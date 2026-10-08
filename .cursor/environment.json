@@ -1,7 +1,7 @@
 {
   "name": "sport-flex",
-  "install": "bash .cursor/install.sh",
-  "start": "bash .cursor/start.sh",
+  "install": "bash .cursor/install.sh\n.venv/bin/pip install -r requirements-dev.txt",
+  "start": "if [ -f .cursor/start.sh ]; then\n  exec bash .cursor/start.sh\nfi\nexport SPORTFLEX_CHROME_NO_SANDBOX=1\nif (echo >/dev/tcp/127.0.0.1/8765) >/dev/null 2>&1; then\n  echo \"sport-flex already listening on port 8765\"\n  exit 0\nfi\nexec .venv/bin/python -m sportflex ui --host 0.0.0.0 --port 8765 --no-browser",
   "ports": [
     {
       "name": "sport-flex",
