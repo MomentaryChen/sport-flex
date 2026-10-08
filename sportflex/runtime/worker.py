@@ -286,13 +286,20 @@ class AccountWorker:
         self._prompts = 0
         self._gave_up = False
 
-    def _record_grab(self, result: dict) -> None:
+    def _publish_grab(self, result: dict, label: str, job: str) -> None:
         result["at"] = time.time()
         result["account"] = self.account.id
         self.last_grab = result
-        self._grab_event(result, "自動送出訂單" if result.get("order") else "自動送出到確認頁", "auto")
+        self._grab_event(result, label, job)
         self._track_payment(result)
         announce_grab(self.notifier, self.account.display, result)
+
+    def _record_grab(self, result: dict) -> None:
+        self._publish_grab(
+            result,
+            "自動送出訂單" if result.get("order") else "自動送出到確認頁",
+            "auto",
+        )
 
     def _alert(self, title: str, body: str) -> None:
         self._event("alert", title, level="warn", data={"body": body})
@@ -329,6 +336,14 @@ class AccountWorker:
                 self._restart_prompts()
                 self._prompts = 1
                 self._prompted_at = time.time()
+                if self.bot:
+                    self._event("relogin_prompt", "已透過 Telegram 傳送驗證碼（網頁顯示驗證碼）")
+                    self.bot.ask_code_async(
+                        self.account.id,
+                        image,
+                        f"[{self.account.id}] {self.account.display} {self._logout_reason}，請回覆這張圖上的驗證碼"
+                        f"（第 {self._prompts}/{MAX_PROMPTS} 次）",
+                    )
             return image
 
         return self.call(run)
@@ -362,8 +377,11 @@ class AccountWorker:
         def run(provider: Provider) -> dict:
             court = provider.find_court(venue, category, court_id)
             result = grab(provider, venue, court, query_date, slot)
-            self._grab_event(result, "手動送出訂單" if result.get("order") else "手動送出到確認頁", "manual")
-            self._track_payment(result)
+            self._publish_grab(
+                result,
+                "手動送出訂單" if result.get("order") else "手動送出到確認頁",
+                "manual",
+            )
             return result
 
         return self.call(run, timeout=90)

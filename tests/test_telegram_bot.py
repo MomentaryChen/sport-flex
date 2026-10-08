@@ -170,7 +170,7 @@ def test_relogin_stops_after_three_unanswered_prompts(monkeypatch):
     worker.captcha_image()
     for _ in range(4):
         due()
-    assert len(bot.photos) == 5  # /login's captcha counted as 1 of 3 (sent by the bot itself), then 2 more
+    assert len(bot.photos) == 6  # 3 unanswered, then web captcha (1) plus 2 more auto prompts
     assert len(bot.texts) == 2
 
 
