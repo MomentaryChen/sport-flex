@@ -1,0 +1,15 @@
+# Build context is the repo root; keep secrets, logins and local data out of the image.
+.env
+.env.*
+.git
+.cursor
+.venv
+.browser-profile
+.profiles
+.pytest_cache
+output
+research
+tests
+infra
+**/__pycache__
+**/*.pyc
