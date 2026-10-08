@@ -6,6 +6,7 @@ from dataclasses import asdict
 from datetime import datetime, timedelta
 from typing import Callable
 
+from sportflex.core.events import EventStore, NullEventStore
 from sportflex.core.models import Court, Slot, slot_bounds, slot_matches
 from sportflex.core.notify import Notifier
 from sportflex.core.rules import next_release, slot_end, validate_targets
@@ -14,6 +15,7 @@ from sportflex.core.venue import Venue
 from sportflex.providers.base import NeedLogin, Provider, Throttled
 
 ACTIVE_PHASES = {"armed", "preparing", "ready", "firing", "need_login"}
+RUN_TARGET_KEYS = ("courtId", "name", "time", "status", "bookedName", "seenSec", "bookedSec", "submitSec", "attempts")
 
 Alert = Callable[[str, str], None]  # (title, body) pushed to the user
 
@@ -25,22 +27,37 @@ def _no_alert(title: str, body: str) -> None:
 LOGIN_DROPPED_WHILE_FIRING = "搶訂中登入失效，請立刻在網頁上重新登入，系統會繼續搶到截止為止。"
 
 
+Sink = Callable[[str, str, str, dict], None]  # (kind, message, level, data) -> event store
+
+
 class JobLog:
-    def __init__(self, keep: int = 30) -> None:
+    """The last lines shown on the page; every line also goes to the event store through `sink`."""
+
+    def __init__(self, sink: Sink | None = None, keep: int = 30) -> None:
         self.lines: list[str] = []
         self.keep = keep
+        self.sink = sink
         self._quiet_at = 0.0
 
-    def note(self, text: str) -> None:
+    def note(self, text: str, kind: str = "note", level: str = "info", **data) -> None:
         self.lines.append(f"{time.strftime('%H:%M:%S')} {text}")
         self.lines = self.lines[-self.keep :]
+        if self.sink:
+            self.sink(kind, text, level, data)
 
-    def quiet(self, text: str, every: float = 10) -> None:
+    def quiet(self, text: str, every: float = 10, kind: str = "status") -> None:
         """Repeated status lines, at most once per `every` seconds."""
         if time.time() - self._quiet_at < every:
             return
         self._quiet_at = time.time()
-        self.note(text)
+        self.note(text, kind)
+
+
+def _sink(events: EventStore, account: str, venue: str, job: str) -> Sink:
+    def write(kind: str, message: str, level: str, data: dict) -> None:
+        events.record(kind, message, account=account, venue=venue, job=job, level=level, data=data)
+
+    return write
 
 
 def build_board(provider: Provider, venue: Venue, category: str, query_date: str) -> dict:
@@ -106,19 +123,27 @@ class SnipeJob:
     """
 
     def __init__(
-        self, venue: Venue, account_id: str, on_grab: Callable[[dict], None], on_alert: Alert = _no_alert
+        self,
+        venue: Venue,
+        account_id: str,
+        on_grab: Callable[[dict], None],
+        on_alert: Alert = _no_alert,
+        events: EventStore | None = None,
     ) -> None:
         self.venue = venue
         self.account_id = account_id
         self.store = SnipeStore(venue.id, account_id)
         self.on_grab = on_grab
         self.on_alert = on_alert
+        self.events = events or NullEventStore()
         self.spec: dict | None = None
-        self.log = JobLog()
+        self.log = JobLog(_sink(self.events, account_id, venue.id, "snipe"))
         self._prepared = False
         self._next_at = 0.0
         self._login_stage = 0  # 1 = checked after arming, 2 = checked login_check_lead_min before release
         self._alerted: set[str] = set()
+        self._run: dict | None = None  # timings of the current wave, written to snipe_runs when it ends
+        self._clock = (datetime.now(), 0.0)  # (the tick's `now`, monotonic at that tick) for _sec()
 
     @property
     def rules(self):
@@ -145,17 +170,25 @@ class SnipeJob:
         }
         self._prepared = False
         self._next_at = 0
+        self._run = None
         self._reset_alerts()
         self.store.save(self.spec)
         names = "、".join(f"{item['name']} {item['time']}" for item in targets)
-        self.log.note(f"已設定 {release['targetLabel']} {names}，{release['opensLabel']} 開搶")
+        self.log.note(
+            f"已設定 {release['targetLabel']} {names}，{release['opensLabel']} 開搶",
+            "armed",
+            targetDate=release["targetDate"],
+            opensAt=release["opensAt"],
+            targets=targets,
+        )
         return self.state()
 
     def cancel(self) -> dict:
         self.spec = None
         self._prepared = False
+        self._run = None
         self.store.clear()
-        self.log.note("已取消搶訂")
+        self.log.note("已取消搶訂", "cancelled")
         return self.state()
 
     def restore(self) -> None:
@@ -170,7 +203,7 @@ class SnipeJob:
         saved["opensAt"] = release["opensAt"]
         self.spec = saved
         self._reset_alerts()
-        self.log.note("恢復尚未完成的搶訂設定")
+        self.log.note("恢復尚未完成的搶訂設定", "restored", targetDate=saved["targetDate"])
 
     def state(self) -> dict:
         phase = self.spec["phase"] if self.spec else "idle"
@@ -220,11 +253,11 @@ class SnipeJob:
             if spec["phase"] == "need_login":
                 spec["phase"] = "armed"
                 self._alerted.discard("login")
-                self.log.note("已重新登入，繼續等開搶")
+                self.log.note("已重新登入，繼續等開搶", "login_ok")
             return
         spec["phase"] = "need_login"
         self._next_at = time.time() + 60
-        self.log.note("登入已失效，請在畫面上輸入驗證碼登入")
+        self.log.note("登入已失效，請在畫面上輸入驗證碼登入", "login_dropped", "warn")
         self._need_login_alert(f"{self.rules.release_time} 開搶前請先在網頁上重新登入，不然搶不到。")
 
     def _prepare(self, provider: Provider, spec: dict) -> None:
@@ -234,7 +267,7 @@ class SnipeJob:
         if not provider.refresh_session()["loggedIn"]:
             spec["phase"] = "need_login"
             self._next_at = time.time() + 15
-            self.log.note("開搶前需要登入，請在畫面上輸入驗證碼")
+            self.log.note("開搶前需要登入，請在畫面上輸入驗證碼", "login_dropped", "warn")
             self._need_login_alert("快開搶了，請立刻在網頁上重新登入。")
             return
         courts = provider.list_courts(self.venue, spec["category"])
@@ -257,9 +290,13 @@ class SnipeJob:
         self._prepared = True
         spec["phase"] = "ready"
         self.store.save(spec)
-        self.log.note(f"已停在 {first.name} 的預約頁，等 {self.rules.release_time}")
+        self.log.note(f"已停在 {first.name} 的預約頁，等 {self.rules.release_time}", "ready", court=first.name)
 
     def _fire(self, provider: Provider, spec: dict, now: datetime) -> None:
+        self._clock = (now, time.monotonic())
+        if self._run is None:
+            self._run = {"firedSec": self._sec(), "releasedSec": None, "firstBookedSec": None}
+            self.log.note("開搶", "fired", sec=self._run["firedSec"])
         spec["phase"] = "firing"
         pending = [item for item in spec["targets"] if item.get("status") not in {"booked", "skipped"}]
         if not pending or now > datetime.fromisoformat(spec["deadline"]):
@@ -270,15 +307,15 @@ class SnipeJob:
             try:
                 candidates = self._candidates(provider, spec, item)
             except Throttled as exc:
-                self.log.note(f"{item['name']} 查詢太頻繁：{exc}")
+                self.log.note(f"{item['name']} 查詢太頻繁：{exc}", "throttled", "warn", sec=self._sec())
                 self._throttled()
                 return
             except NeedLogin as exc:
-                self.log.note(f"{item['name']} 查詢失敗，登入已失效：{exc}")
+                self.log.note(f"{item['name']} 查詢失敗，登入已失效：{exc}", "login_dropped", "error", sec=self._sec())
                 self._need_login_alert(LOGIN_DROPPED_WHILE_FIRING)
                 continue
             except Exception as exc:
-                self.log.note(f"{item['name']} 查詢失敗：{exc}")
+                self.log.note(f"{item['name']} 查詢失敗：{exc}", "error", "error", sec=self._sec())
                 continue
             for court in candidates:
                 outcome = self._attempt(provider, spec, item, court)
@@ -333,20 +370,24 @@ class SnipeJob:
 
     def _attempt(self, provider: Provider, spec: dict, item: dict, court: Court) -> str:
         """Check one court and submit if its slot is open. Returns booked/skipped/miss/throttled/unreleased."""
+        item["attempts"] = item.get("attempts", 0) + 1
         try:
             availability = provider.availability(court, spec["targetDate"])
         except Throttled as exc:
-            self.log.note(f"{court.name} 查詢太頻繁：{exc}")
+            self.log.note(f"{court.name} 查詢太頻繁：{exc}", "throttled", "warn", sec=self._sec())
             return "throttled"
         except NeedLogin as exc:
-            self.log.note(f"{court.name} 查詢失敗，登入已失效：{exc}")
+            self.log.note(f"{court.name} 查詢失敗，登入已失效：{exc}", "login_dropped", "error", sec=self._sec())
             self._need_login_alert(LOGIN_DROPPED_WHILE_FIRING)
             return "miss"
         except Exception as exc:
-            self.log.note(f"{court.name} 查詢失敗：{exc}")
+            self.log.note(f"{court.name} 查詢失敗：{exc}", "error", "error", sec=self._sec())
             return "miss"
         if availability.query_date != spec["targetDate"]:
             return "unreleased"
+        if self._run is not None and self._run["releasedSec"] is None:
+            self._run["releasedSec"] = self._sec()
+            self.log.note(f"{spec['targetDate']} 已釋出", "released", sec=self._run["releasedSec"])
         match = _match_start(availability.slots, item["time"])
         if match is None:
             return "miss"
@@ -354,33 +395,51 @@ class SnipeJob:
         if hours != self.rules.slot_hours:
             if item["courtId"]:
                 item["status"] = "skipped"
-                self.log.note(f"{court.name} {slot.time} 不是 {self.rules.slot_hours:g} 小時，依規定不送出")
+                self.log.note(f"{court.name} {slot.time} 不是 {self.rules.slot_hours:g} 小時，依規定不送出", "skipped")
                 return "skipped"
             return "miss"
-        self.log.note(f"看到 {court.name} {slot.time}，送出")
+        item["seenSec"] = self._sec()
+        self.log.note(
+            f"看到 {court.name} {slot.time}，送出", "submit", court=court.name, time=slot.time, sec=item["seenSec"]
+        )
+        started = time.monotonic()
         try:
             result = grab(provider, self.venue, court, spec["targetDate"], slot)
         except NeedLogin as exc:
-            self.log.note(f"{court.name} 送出失敗，登入已失效：{exc}")
+            self.log.note(f"{court.name} 送出失敗，登入已失效：{exc}", "login_dropped", "error", sec=self._sec())
             self._need_login_alert(LOGIN_DROPPED_WHILE_FIRING)
             return "miss"
         except Exception as exc:
-            self.log.note(f"{court.name} 送出失敗：{exc}")
+            self.log.note(f"{court.name} 送出失敗：{exc}", "error", "error", sec=self._sec())
             return "miss"
         item["status"] = "booked"
         item["bookedCourtId"] = court.id
         item["bookedName"] = court.name
+        item["submitSec"] = round(time.monotonic() - started, 3)
+        item["bookedSec"] = self._sec()
+        if self._run is not None and self._run["firstBookedSec"] is None:
+            self._run["firstBookedSec"] = item["bookedSec"]
         self.store.save(spec)
         self.on_grab(result)
-        self.log.note(f"{court.name} {slot.time} 已到確認頁，刷卡請自己按")
+        self.log.note(
+            f"{court.name} {slot.time} 已到確認頁（開搶後 {item['bookedSec']:.2f} 秒），刷卡請自己按",
+            "booked",
+            court=court.name,
+            time=slot.time,
+            price=slot.price,
+            sec=item["bookedSec"],
+            submitSec=item["submitSec"],
+        )
         return "booked"
 
     def _finish(self, text: str) -> None:
         spec = self.spec
         if spec:
             spec["phase"] = "done"
+            self._record_run(spec, text)
+        else:
+            self.log.note(text)
         self.store.clear()
-        self.log.note(text)
         missed = [item for item in (spec or {}).get("targets", []) if item.get("status") != "booked"]
         if missed:
             names = "、".join(f"{item['name']} {item['time']}" for item in missed)
@@ -388,6 +447,41 @@ class SnipeJob:
                 f"沒搶到 {self.venue.name} {spec['targetDate']}",
                 f"{names}\n{text}。可以到網頁看執行紀錄，或改用盯場等人退訂。",
             )
+
+    def _sec(self) -> float:
+        """Seconds since release on the tick's clock (tests pass a fake `now`)."""
+        if not self.spec:
+            return 0.0
+        tick_now, tick_mono = self._clock
+        elapsed = time.monotonic() - tick_mono if tick_mono else 0.0
+        opens_at = datetime.fromisoformat(self.spec["opensAt"])
+        return round((tick_now - opens_at).total_seconds() + elapsed, 3)
+
+    def _record_run(self, spec: dict, reason: str) -> None:
+        """One snipe_runs row per wave: result plus seconds-after-release for each step."""
+        run = self._run or {}
+        targets = spec.get("targets", [])
+        booked = sum(1 for item in targets if item.get("status") == "booked")
+        result = "booked" if targets and booked == len(targets) else "partial" if booked else "missed"
+        summary = {
+            "account": self.account_id,
+            "venue": self.venue.id,
+            "targetDate": spec["targetDate"],
+            "opensAt": spec["opensAt"],
+            "result": result,
+            "booked": booked,
+            "total": len(targets),
+            "firedSec": run.get("firedSec"),
+            "releasedSec": run.get("releasedSec"),
+            "firstBookedSec": run.get("firstBookedSec"),
+            "finishedSec": self._sec() if self._run else None,
+            "reason": reason,
+            "targets": [{key: item.get(key) for key in RUN_TARGET_KEYS} for item in targets],
+        }
+        self._run = None
+        self.events.record_snipe_run(summary)
+        level = "info" if result == "booked" else "warn"
+        self.log.note(f"{reason}：搶到 {booked}/{len(targets)}", "snipe_result", level, **summary)
 
     def _throttled(self) -> None:
         self._next_at = time.time() + self.rules.throttle_backoff_sec
@@ -415,7 +509,13 @@ class WatchJob:
     """Poll an already-released day and grab the first open slot that matches."""
 
     def __init__(
-        self, venue: Venue, spec: dict, on_grab: Callable[[dict], None], on_alert: Alert = _no_alert
+        self,
+        venue: Venue,
+        spec: dict,
+        on_grab: Callable[[dict], None],
+        on_alert: Alert = _no_alert,
+        events: EventStore | None = None,
+        account_id: str = "",
     ) -> None:
         if spec.get("category") not in venue.categories:
             raise ValueError(f"{venue.name} 沒有 {spec.get('category')}")
@@ -424,14 +524,16 @@ class WatchJob:
         self.on_grab = on_grab
         self.on_alert = on_alert
         self._alerted: set[str] = set()
-        self.log = JobLog()
+        self.log = JobLog(_sink(events or NullEventStore(), account_id, venue.id, "watch"))
         self.running = True
         self._next_at = 0.0
         rules = venue.rules
         self.interval = max(rules.watch_min_interval_sec, int(spec.get("interval") or rules.watch_interval_sec))
         self.log.note(
             f"開始盯 {venue.name} {spec['category']} {spec.get('date')} "
-            f"{spec.get('timeFrom') or ''}-{spec.get('timeTo') or ''}"
+            f"{spec.get('timeFrom') or ''}-{spec.get('timeTo') or ''}",
+            "watch_started",
+            spec=spec,
         )
 
     def state(self) -> dict:
@@ -445,36 +547,36 @@ class WatchJob:
         try:
             board = build_board(provider, self.venue, spec["category"], spec["date"])
         except Throttled as exc:
-            self.log.note(f"盯場查詢太頻繁：{exc}")
+            self.log.note(f"盯場查詢太頻繁：{exc}", "throttled", "warn")
             self._next_at += self.venue.rules.throttle_backoff_sec
             self._alert_once("throttle", f"{self.venue.name} 回報操作太頻繁", f"盯場 {spec['date']} 被網站擋下，會放慢後繼續。")
             return
         except NeedLogin as exc:
-            self.log.note(f"盯場查詢失敗，登入已失效：{exc}")
+            self.log.note(f"盯場查詢失敗，登入已失效：{exc}", "login_dropped", "warn")
             self._alert_once("login", f"{self.venue.name} 登入已失效", f"盯場 {spec['date']}：請在網頁上重新登入，盯場會繼續。")
             return
         except Exception as exc:
-            self.log.note(f"盯場查詢失敗：{exc}")
+            self.log.note(f"盯場查詢失敗：{exc}", "error", "error")
             return
         self._alerted.discard("login")
         match = _first_open(board["courts"], spec)
         if not match:
-            self.log.note(f"{spec['date']} 還沒有符合的空檔")
+            self.log.note(f"{spec['date']} 還沒有符合的空檔", "status")
             return
         court_id, slot = match
-        self.log.note(f"看到空檔 {slot.time}，開始搶")
+        self.log.note(f"看到空檔 {slot.time}，開始搶", "submit", court=court_id, time=slot.time)
         try:
             court = provider.find_court(self.venue, spec["category"], court_id)
             result = grab(provider, self.venue, court, board["window"]["date"] or spec["date"], slot)
         except NeedLogin as exc:
-            self.log.note(f"搶位失敗，登入已失效：{exc}")
+            self.log.note(f"搶位失敗，登入已失效：{exc}", "login_dropped", "error")
             self._alert_once("login", f"{self.venue.name} 登入已失效", f"盯場看到 {slot.time} 有空，但登入失效送不出去，請重新登入。")
             return
         except Exception as exc:
-            self.log.note(f"搶位失敗：{exc}")
+            self.log.note(f"搶位失敗：{exc}", "error", "error")
             return
         self.running = False
-        self.log.note(f"已送到 {result['url']}")
+        self.log.note(f"已送到 {result['url']}", "booked", court=result["court"], time=result["time"])
         self.on_grab(result)
 
     def _alert_once(self, kind: str, title: str, body: str) -> None:

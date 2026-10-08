@@ -15,6 +15,7 @@ from sportflex.core.engine import (
     grab,
     public_snapshot,
 )
+from sportflex.core.events import EventStore, NullEventStore
 from sportflex.core.models import Slot
 from sportflex.core.notify import Notifier
 from sportflex.core.venue import Venue
@@ -27,12 +28,16 @@ class AccountWorker:
     """Owns one account's browser. Playwright's sync API is thread-bound, so every page action
     — HTTP requests and the snipe/watch ticks alike — runs on this worker's own thread."""
 
-    def __init__(self, account: Account, venues: dict[str, Venue], notifier: Notifier) -> None:
+    def __init__(
+        self, account: Account, venues: dict[str, Venue], notifier: Notifier, events: EventStore | None = None
+    ) -> None:
         self.account = account
         self.notifier = notifier
+        self.events = events or NullEventStore()
         self.venues = {vid: venue for vid, venue in venues.items() if venue.provider == account.provider}
         self.snipes = {
-            vid: SnipeJob(venue, account.id, self._record_grab, self._alert) for vid, venue in self.venues.items()
+            vid: SnipeJob(venue, account.id, self._record_grab, self._alert, self.events)
+            for vid, venue in self.venues.items()
         }
         self.watch: WatchJob | None = None
         self.last_grab: dict | None = None
@@ -120,10 +125,24 @@ class AccountWorker:
         result["at"] = time.time()
         result["account"] = self.account.id
         self.last_grab = result
+        self._grab_event(result, "自動送出到確認頁", "auto")
         announce_grab(self.notifier, self.account.display, result)
 
     def _alert(self, title: str, body: str) -> None:
+        self._event("alert", title, level="warn", data={"body": body})
         self.notifier.send(title, f"{body}\n帳號：{self.account.display}")
+
+    def _event(self, kind: str, message: str, venue: str = "", job: str = "session", **kwargs) -> None:
+        self.events.record(kind, message, account=self.account.id, venue=venue, job=job, **kwargs)
+
+    def _grab_event(self, result: dict, label: str, job: str) -> None:
+        self._event(
+            "grab",
+            f"{label} {result['court']} {result['date']} {result['time']}",
+            venue=result.get("venue", ""),
+            job=job,
+            data={key: result.get(key) for key in ("court", "date", "time", "price", "url", "pressed")},
+        )
 
     # ---- session -------------------------------------------------------
 
@@ -140,6 +159,9 @@ class AccountWorker:
             result = provider.login(code)
             if result.get("ok"):
                 self.session = provider.refresh_session()
+                self._event("login", "登入成功")
+            else:
+                self._event("login_failed", f"登入失敗：{result.get('message', '')}", level="warn")
             return result
 
         result = self.call(run)
@@ -157,7 +179,9 @@ class AccountWorker:
     def grab(self, venue: Venue, category: str, court_id: str, query_date: str, slot: Slot) -> dict:
         def run(provider: Provider) -> dict:
             court = provider.find_court(venue, category, court_id)
-            return grab(provider, venue, court, query_date, slot)
+            result = grab(provider, venue, court, query_date, slot)
+            self._grab_event(result, "手動送出到確認頁", "manual")
+            return result
 
         return self.call(run, timeout=90)
 
@@ -179,7 +203,7 @@ class AccountWorker:
                     self.watch.running = False
                     self.watch.log.note("已停止盯場")
             else:
-                self.watch = WatchJob(venue, spec, self._record_grab, self._alert)
+                self.watch = WatchJob(venue, spec, self._record_grab, self._alert, self.events, self.account.id)
             return self.watch_state()
 
         return self.call(run)

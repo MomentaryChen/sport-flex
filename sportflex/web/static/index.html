@@ -275,6 +275,25 @@
     .busy-box { display: flex; gap: 10px; align-items: center; padding: 14px 18px; border-radius: 14px; background: var(--surface); box-shadow: var(--shadow); font-weight: 700; }
     .spinner { width: 18px; height: 18px; border-radius: 50%; border: 2.5px solid var(--accent-soft); border-top-color: var(--accent); animation: spin .8s linear infinite; }
     @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ---- history ---- */
+    .sheet.wide { width: min(780px, 100%); }
+    .history-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+    .history-section { font-size: 13px; font-weight: 700; margin: 16px 0 8px; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+    .run { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; margin-bottom: 8px; background: var(--surface-2); }
+    .run-top { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px; align-items: center; }
+    .run-date { font-weight: 700; }
+    .badge.miss { background: var(--danger-soft); color: var(--danger); border-color: transparent; }
+    .badge.part { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
+    .run-times { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--ink-2); margin-top: 6px; }
+    .run-times b { font-family: var(--mono); font-weight: 700; color: var(--ink); }
+    .run-target { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 10px; font-size: 12px; padding: 6px 0 0; margin-top: 6px; border-top: 1px dashed var(--line); color: var(--ink-2); }
+    .ev { display: grid; grid-template-columns: 116px minmax(0, 1fr); gap: 8px; font-size: 12.5px; padding: 6px 0; border-top: 1px solid var(--line); }
+    .ev:first-child { border-top: 0; }
+    .ev-at { font-family: var(--mono); color: var(--ink-3); font-size: 11.5px; }
+    .ev.warn .ev-msg { color: var(--warn); }
+    .ev.error .ev-msg { color: var(--danger); }
+    .ev-kind { font-family: var(--mono); font-size: 10.5px; color: var(--ink-3); margin-left: 6px; }
   </style>
 </head>
 <body>
@@ -292,6 +311,9 @@
       <div class="picker"><label for="venueSelect">場館</label><select id="venueSelect"></select></div>
       <div class="picker"><label for="accountSelect">帳號</label><select id="accountSelect"></select></div>
       <span class="status" id="sessionPill"><span class="dot"></span><span id="sessionText">檢查登入…</span></span>
+      <button class="icon-btn" id="historyBtn" type="button" title="歷史紀錄" aria-label="歷史紀錄">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l3 2"/></svg>
+      </button>
     </div>
   </header>
 
@@ -389,6 +411,25 @@
       <div class="notice" id="resultText"></div>
       <img id="resultImage" alt="網站畫面" />
       <div class="sheet-actions" id="resultButtons"></div>
+    </div>
+  </div>
+  <div id="historyModal" class="overlay hidden">
+    <div class="sheet wide" role="dialog" aria-modal="true" aria-labelledby="historyTitle">
+      <div class="history-head">
+        <h2 id="historyTitle">歷史紀錄</h2>
+        <button class="btn btn-ghost" id="closeHistory" type="button">關閉</button>
+      </div>
+      <div class="muted" id="historyScope" style="font-size:12px"></div>
+      <div class="history-section">開搶結果（近 30 天，秒數為開搶後幾秒）</div>
+      <div id="runs"></div>
+      <div class="history-section">
+        <span>事件（近 7 天）</span>
+        <div class="seg" id="eventFilter">
+          <button type="button" class="active" data-filter="key">重要</button>
+          <button type="button" data-filter="all">全部</button>
+        </div>
+      </div>
+      <div id="eventList"></div>
     </div>
   </div>
   <div class="toast-box" id="toasts"></div>
@@ -859,7 +900,86 @@
       }
     }
 
+    // ---- history -----------------------------------------------------
+
+    const RESULT = { booked: ["全搶到", "ok"], partial: ["部分搶到", "part"], missed: ["沒搶到", "miss"] };
+    const QUIET_KINDS = new Set(["note", "status"]);
+    const secs = (value) => value === null || value === undefined ? "—" : `${value.toFixed(2)}s`;
+
+    async function openHistory() {
+      $("historyModal").classList.remove("hidden");
+      const account = state.meta.accounts.find((item) => item.id === state.account);
+      $("historyScope").textContent = `${state.venue.name} · ${account ? account.label : state.account}`;
+      $("runs").replaceChildren(el("div", { class: "skeleton" }));
+      $("eventList").replaceChildren(el("div", { class: "skeleton" }));
+      try {
+        const [runs, history] = await Promise.all([
+          api("/api/snipe-runs" + query({ days: 30 })),
+          api("/api/history" + query({ days: 7, limit: 300 })),
+        ]);
+        state.history = history.events;
+        renderRuns(runs.runs);
+        renderEvents();
+      } catch (error) {
+        $("runs").replaceChildren(el("div", { class: "empty", text: error.message }));
+        $("eventList").replaceChildren();
+      }
+    }
+
+    function renderRuns(runs) {
+      if (!runs.length) {
+        $("runs").replaceChildren(el("div", { class: "empty", text: "還沒有開搶紀錄" }));
+        return;
+      }
+      $("runs").replaceChildren(...runs.map((run) => {
+        const [label, tone] = RESULT[run.result] || [run.result, ""];
+        return el("div", { class: "run" }, [
+          el("div", { class: "run-top" }, [
+            el("span", { class: "run-date", text: `${run.target_date} 場次 · ${run.opens_at.slice(5, 10).replace("-", "/")} ${run.opens_at.slice(11, 16)} 開搶` }),
+            el("span", { class: `badge ${tone}`, text: `${label} ${run.booked}/${run.total}` }),
+          ]),
+          el("div", { class: "run-times" }, [
+            ["開始查", run.fired_sec], ["釋出", run.released_sec], ["首張到確認頁", run.first_booked_sec], ["結束", run.finished_sec],
+          ].map(([name, value]) => el("span", {}, [`${name} `, el("b", { text: secs(value) })]))),
+          ...run.targets.map((item) => el("div", { class: "run-target" }, [
+            el("span", { text: `${item.bookedName || item.name || "任一場"} · ${item.time}` }),
+            el("span", {
+              class: "mono",
+              text: item.status === "booked"
+                ? `看到 ${secs(item.seenSec)} → 確認頁 ${secs(item.bookedSec)}（送出 ${secs(item.submitSec)}）· 查 ${item.attempts || 0} 次`
+                : `${item.status === "skipped" ? "略過" : "未搶到"} · 查 ${item.attempts || 0} 次`,
+            }),
+          ])),
+          run.reason ? el("div", { class: "muted", style: "font-size:12px;margin-top:6px", text: run.reason }) : null,
+        ]);
+      }));
+    }
+
+    function renderEvents() {
+      const all = document.querySelector("#eventFilter .active").dataset.filter === "all";
+      const events = (state.history || []).filter((event) => all || !QUIET_KINDS.has(event.kind));
+      if (!events.length) {
+        $("eventList").replaceChildren(el("div", { class: "empty", text: "沒有事件" }));
+        return;
+      }
+      $("eventList").replaceChildren(...events.map((event) => el("div", { class: `ev ${event.level}` }, [
+        el("span", { class: "ev-at", text: event.at.slice(5, 19).replace("T", " ") }),
+        el("span", {}, [el("span", { class: "ev-msg", text: event.message }), el("span", { class: "ev-kind", text: event.job ? `${event.job}·${event.kind}` : event.kind })]),
+      ])));
+    }
+
     // ---- wiring ------------------------------------------------------
+
+    $("historyBtn").onclick = openHistory;
+    $("closeHistory").onclick = () => $("historyModal").classList.add("hidden");
+    $("historyModal").onclick = (event) => { if (event.target === $("historyModal")) $("historyModal").classList.add("hidden"); };
+    document.querySelectorAll("#eventFilter button").forEach((button) => {
+      button.onclick = () => {
+        document.querySelectorAll("#eventFilter button").forEach((item) => item.classList.remove("active"));
+        button.classList.add("active");
+        renderEvents();
+      };
+    });
 
     document.querySelectorAll("#periods button").forEach((button) => {
       button.onclick = () => {
