@@ -19,7 +19,7 @@ def open_page(account: Account, headless: bool = True):
         "locale": "zh-TW",
         "viewport": {"width": 430, "height": 900},
     }
-    if os.environ.get("SPORTFLEX_CHROME_NO_SANDBOX") == "1":
+    if os.environ.get("SPORT_FLEX_CHROME_NO_SANDBOX") == "1":
         launch["args"] = ["--no-sandbox", "--disable-dev-shm-usage"]
     with sync_playwright() as playwright:
         context = playwright.chromium.launch_persistent_context(str(profile), **launch)
