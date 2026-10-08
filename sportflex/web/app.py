@@ -231,11 +231,11 @@ async def events(request: Request, venue: str | None = None, account: str | None
     return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
 
 
-def serve(port: int = 8765, open_browser: bool = True) -> None:
+def serve(port: int = 8765, host: str = "127.0.0.1", open_browser: bool = True) -> None:
     import uvicorn
 
     url = f"http://127.0.0.1:{port}/"
-    print(f"啟動瀏覽器中… 完成後打開 {url}（API 文件：{url}docs）", flush=True)
+    print(f"搶場服務聽在 {host}:{port}（本機開啟 {url}，API 文件：{url}docs）", flush=True)
     if open_browser:
         threading.Thread(target=_open_when_up, args=(port, url), daemon=True).start()
 
@@ -244,7 +244,7 @@ def serve(port: int = 8765, open_browser: bool = True) -> None:
             SHUTDOWN.set()  # Ctrl+C: let open event streams end instead of waiting on them
             super().handle_exit(sig, frame)
 
-    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning", timeout_graceful_shutdown=3)
+    config = uvicorn.Config(app, host=host, port=port, log_level="warning", timeout_graceful_shutdown=3)
     Server(config).run()
 
 

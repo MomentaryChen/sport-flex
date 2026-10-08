@@ -52,6 +52,8 @@ def main(argv: list[str] | None = None) -> int:
 
     ui = sub.add_parser("ui", help="打開搶場網頁")
     ui.add_argument("--port", type=int, default=8765)
+    ui.add_argument("--host", default="127.0.0.1", help="監聽位址。Cloud Agent 用 0.0.0.0")
+    ui.add_argument("--no-browser", action="store_true", help="不要自動打開本機瀏覽器")
 
     book = sub.add_parser("book", help="送出一個時段的預約，停在付款前")
     _add_filters(book)
@@ -72,7 +74,7 @@ def main(argv: list[str] | None = None) -> int:
             from sportflex.web.app import serve
 
             try:
-                serve(port=args.port)
+                serve(port=args.port, host=args.host, open_browser=not args.no_browser)
             except KeyboardInterrupt:  # uvicorn re-raises Ctrl+C after its clean shutdown
                 pass
             print("已關閉", flush=True)
