@@ -115,6 +115,8 @@ class AccountWorker:
             with open_page(self.account) as page:
                 provider = create_provider(self.account.provider, page)
                 provider.order = self.account.order_options()
+                if self.venues:
+                    provider.api_pause_sec = max(venue.rules.api_pause_sec for venue in self.venues.values())
                 self.session = provider.refresh_session()
                 if not self.session["loggedIn"]:
                     self._event("logout_detected", "啟動時發現尚未登入", level="warn")

@@ -213,6 +213,8 @@ def test_any_court_falls_back_when_search_fails(venue):
     provider.open = {"B": ["19:00"]}
     job.tick(provider, opens(job) - timedelta(seconds=30))
     job.tick(provider, opens(job) + timedelta(seconds=1))
+    job._next_at = 0
+    job.tick(provider, opens(job) + timedelta(seconds=2))
     assert provider.submitted == [("B", job.spec["targetDate"], "19:00 - 20:00")]
 
 
