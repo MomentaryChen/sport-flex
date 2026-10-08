@@ -1,0 +1,916 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sport Flex</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=JetBrains+Mono:wght@500;700&display=swap" />
+  <style>
+    :root {
+      --bg: #f3f5f7;
+      --surface: #ffffff;
+      --surface-2: #f7f9fa;
+      --line: #e3e8ec;
+      --ink: #14202b;
+      --ink-2: #4b5966;
+      --ink-3: #8794a0;
+      --accent: #0e9f6e;
+      --accent-ink: #087a54;
+      --accent-soft: #e3f6ee;
+      --accent-line: #b9e8d4;
+      --warn: #b45309;
+      --warn-soft: #fdf3e2;
+      --danger: #dc4a32;
+      --danger-soft: #fdece8;
+      --taken: #eef1f4;
+      --shadow: 0 1px 2px rgba(20, 32, 43, .04), 0 6px 24px rgba(20, 32, 43, .06);
+      --radius: 14px;
+      --mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+      color-scheme: light;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0d1318;
+        --surface: #151d24;
+        --surface-2: #1b252e;
+        --line: #26323d;
+        --ink: #e6edf2;
+        --ink-2: #a9b6c1;
+        --ink-3: #6f7d89;
+        --accent: #2fc28c;
+        --accent-ink: #5ad8a8;
+        --accent-soft: #123528;
+        --accent-line: #1e5a43;
+        --warn: #f0b35a;
+        --warn-soft: #3a2a12;
+        --danger: #ff7a62;
+        --danger-soft: #3d1c16;
+        --taken: #1d2730;
+        --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 8px 28px rgba(0, 0, 0, .25);
+        color-scheme: dark;
+      }
+    }
+
+    * { box-sizing: border-box; }
+    html, body { margin: 0; }
+    body {
+      font-family: "Noto Sans TC", "Segoe UI", "PingFang TC", "Microsoft JhengHei", sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+      font-size: 14px;
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+    }
+    button, select, input { font: inherit; color: inherit; }
+    button { cursor: pointer; }
+    .hidden { display: none !important; }
+    .muted { color: var(--ink-3); }
+    .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+    /* ---- top bar ---- */
+    .topbar {
+      position: sticky; top: 0; z-index: 20;
+      background: color-mix(in srgb, var(--surface) 88%, transparent);
+      backdrop-filter: blur(10px);
+      border-bottom: 1px solid var(--line);
+    }
+    .topbar-inner {
+      max-width: 1240px; margin: 0 auto; padding: 10px 16px;
+      display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    }
+    .brand { display: flex; align-items: center; gap: 10px; margin-right: auto; }
+    .brand-mark {
+      width: 30px; height: 30px; border-radius: 9px;
+      background: var(--accent); display: grid; place-items: center;
+    }
+    .brand-mark svg { width: 18px; height: 18px; }
+    .brand-name { font-weight: 700; font-size: 16px; letter-spacing: .01em; }
+    .brand-sub { font-size: 12px; color: var(--ink-3); }
+    .picker {
+      display: flex; align-items: center; gap: 6px;
+      border: 1px solid var(--line); border-radius: 10px; padding: 0 4px 0 10px;
+      background: var(--surface);
+    }
+    .picker label { font-size: 12px; color: var(--ink-3); white-space: nowrap; }
+    .picker select { border: 0; background: transparent; padding: 7px 4px; outline: none; max-width: 180px; }
+    .status {
+      display: inline-flex; align-items: center; gap: 6px;
+      font-size: 12px; padding: 6px 10px; border-radius: 999px;
+      background: var(--surface-2); border: 1px solid var(--line); color: var(--ink-2); white-space: nowrap;
+    }
+    .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ink-3); }
+    .status.on .dot { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+    .status.off .dot { background: var(--warn); }
+
+    /* ---- layout ---- */
+    .page { max-width: 1240px; margin: 0 auto; padding: 20px; }
+    .layout { display: grid; grid-template-columns: 380px minmax(0, 1fr); gap: 20px; align-items: start; }
+    .layout > * { min-width: 0; }
+    .sticky { position: sticky; top: 76px; }
+    @media (max-width: 920px) {
+      .layout { grid-template-columns: minmax(0, 1fr); }
+      .grid .court-col { min-width: 86px; padding: 8px; }
+      .cell { width: 50px; }
+      .sticky { position: static; }
+      .page { padding: 14px; }
+    }
+    .card {
+      background: var(--surface); border: 1px solid var(--line);
+      border-radius: var(--radius); box-shadow: var(--shadow);
+    }
+    .card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 16px 18px 0; }
+    .card-title { font-size: 15px; font-weight: 700; margin: 0; }
+    .card-body { padding: 14px 18px 18px; }
+    .divider { height: 1px; background: var(--line); margin: 14px 0; }
+
+    /* ---- login banner ---- */
+    .login {
+      display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+      padding: 12px 16px; margin-bottom: 16px;
+      background: var(--warn-soft); border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent);
+      border-radius: var(--radius); color: var(--warn);
+    }
+    .login strong { margin-right: auto; }
+    .login img { height: 38px; border-radius: 8px; background: #fff; border: 1px solid var(--line); }
+    .login input {
+      width: 110px; padding: 8px 10px; border-radius: 9px;
+      border: 1px solid var(--line); background: var(--surface); color: var(--ink);
+    }
+
+    /* ---- buttons ---- */
+    .btn {
+      border: 1px solid var(--line); background: var(--surface); color: var(--ink);
+      border-radius: 10px; padding: 8px 14px; font-weight: 500;
+      transition: background .15s, border-color .15s, transform .05s;
+    }
+    .btn:hover { background: var(--surface-2); }
+    .btn:active { transform: translateY(1px); }
+    .btn:disabled { opacity: .45; cursor: not-allowed; }
+    .btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .btn-primary:hover { background: var(--accent-ink); }
+    .btn-danger { background: var(--danger-soft); border-color: transparent; color: var(--danger); }
+    .btn-ghost { border-color: transparent; background: transparent; color: var(--ink-2); }
+    .btn-block { width: 100%; padding: 11px 14px; font-size: 15px; }
+    .icon-btn {
+      width: 32px; height: 32px; display: grid; place-items: center;
+      border-radius: 9px; border: 1px solid var(--line); background: var(--surface); color: var(--ink-2);
+    }
+    .icon-btn:hover { background: var(--surface-2); }
+    .icon-btn svg { width: 16px; height: 16px; }
+
+    /* ---- snipe card ---- */
+    .release { padding: 18px; border-radius: 12px; background: var(--surface-2); border: 1px solid var(--line); }
+    .release-top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+    .release-label { font-size: 12px; color: var(--ink-3); }
+    .release-date { font-size: 22px; font-weight: 700; margin-top: 2px; }
+    .countdown { font-family: var(--mono); font-size: 34px; font-weight: 700; letter-spacing: .02em; margin-top: 10px; font-variant-numeric: tabular-nums; }
+    .countdown.live { color: var(--accent); }
+    .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+    .rule-chip { font-size: 12px; padding: 3px 9px; border-radius: 999px; background: var(--surface); border: 1px solid var(--line); color: var(--ink-2); }
+
+    .targets { display: grid; gap: 8px; }
+    .target {
+      display: grid; grid-template-columns: 24px minmax(0, 1fr) 132px 30px; gap: 8px; align-items: center;
+    }
+    .target-no {
+      width: 24px; height: 24px; border-radius: 7px; display: grid; place-items: center;
+      font-size: 12px; font-weight: 700; background: var(--accent-soft); color: var(--accent-ink);
+    }
+    .field {
+      width: 100%; padding: 9px 10px; border-radius: 10px;
+      border: 1px solid var(--line); background: var(--surface); outline: none;
+    }
+    .field:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+    .field:disabled { opacity: .7; }
+    .remove { border: 0; background: transparent; color: var(--ink-3); font-size: 18px; line-height: 1; border-radius: 8px; height: 30px; }
+    .remove:hover { background: var(--danger-soft); color: var(--danger); }
+    .add-target { margin-top: 8px; width: 100%; border-style: dashed; color: var(--ink-2); }
+    .hint { font-size: 12px; color: var(--ink-3); margin: 8px 0 0; }
+
+    .stepper { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; margin: 4px 0 12px; }
+    .step { text-align: center; font-size: 11px; color: var(--ink-3); }
+    .step-bar { height: 4px; border-radius: 4px; background: var(--line); margin-bottom: 6px; }
+    .step.done .step-bar { background: var(--accent-line); }
+    .step.current .step-bar { background: var(--accent); }
+    .step.current { color: var(--accent-ink); font-weight: 700; }
+    .alert { font-size: 13px; padding: 9px 12px; border-radius: 10px; background: var(--warn-soft); color: var(--warn); margin-bottom: 10px; }
+    .tstatus { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; padding: 8px 0; border-top: 1px dashed var(--line); }
+    .tstatus:first-child { border-top: 0; }
+    .badge { font-size: 12px; padding: 1px 8px; border-radius: 999px; background: var(--surface-2); color: var(--ink-2); border: 1px solid var(--line); white-space: nowrap; }
+    .badge.ok { background: var(--accent-soft); color: var(--accent-ink); border-color: var(--accent-line); }
+    .badge.skip { background: var(--taken); color: var(--ink-3); }
+
+    details.log { margin-top: 12px; }
+    details.log summary { cursor: pointer; font-size: 12px; color: var(--ink-3); list-style: none; }
+    details.log summary::before { content: "▸ "; }
+    details.log[open] summary::before { content: "▾ "; }
+    .log-lines {
+      margin-top: 8px; padding: 10px 12px; border-radius: 10px; background: var(--surface-2);
+      font-family: var(--mono); font-size: 11.5px; line-height: 1.7; color: var(--ink-2);
+      max-height: 180px; overflow: auto; white-space: pre-wrap;
+    }
+    .jobs { font-size: 12px; color: var(--ink-3); margin-top: 10px; }
+
+    /* ---- board ---- */
+    .toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; }
+    .seg { display: inline-flex; padding: 3px; gap: 2px; border-radius: 11px; background: var(--surface-2); border: 1px solid var(--line); overflow-x: auto; max-width: 100%; }
+    .seg button { border: 0; background: transparent; padding: 6px 12px; border-radius: 8px; color: var(--ink-2); white-space: nowrap; }
+    .seg button.active { background: var(--surface); color: var(--ink); font-weight: 700; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+    .dates { display: flex; gap: 6px; overflow-x: auto; padding: 12px 0 4px; scrollbar-width: thin; }
+    .date {
+      flex: 0 0 auto; width: 56px; padding: 7px 0; border-radius: 11px; text-align: center;
+      border: 1px solid var(--line); background: var(--surface);
+    }
+    .date .wd { display: block; font-size: 11px; color: var(--ink-3); }
+    .date .md { display: block; font-weight: 700; font-family: var(--mono); font-size: 13px; }
+    .date.weekend .wd { color: var(--danger); }
+    .date.active { background: var(--ink); border-color: var(--ink); color: var(--surface); }
+    .date.active .wd { color: inherit; opacity: .7; }
+
+    .grid-wrap { overflow-x: auto; margin-top: 12px; border: 1px solid var(--line); border-radius: 12px; }
+    table.grid { border-collapse: separate; border-spacing: 0; width: 100%; min-width: max-content; }
+    .grid th, .grid td { padding: 0; border-bottom: 1px solid var(--line); }
+    .grid tr:last-child td, .grid tr:last-child th { border-bottom: 0; }
+    .grid thead th {
+      font-size: 11px; font-weight: 500; color: var(--ink-3); font-family: var(--mono);
+      padding: 8px 4px; background: var(--surface-2); text-align: center;
+    }
+    .grid .court-col {
+      position: sticky; left: 0; z-index: 1; text-align: left; background: var(--surface);
+      padding: 10px 12px; min-width: 112px; border-right: 1px solid var(--line);
+    }
+    .grid thead .court-col { background: var(--surface-2); }
+    .court-name { font-weight: 700; font-size: 13px; }
+    .court-meta { font-size: 11px; color: var(--ink-3); }
+    .grid td { padding: 5px 3px; text-align: center; }
+    .cell {
+      width: 58px; height: 40px; border-radius: 9px; border: 1px solid transparent;
+      display: inline-flex; flex-direction: column; align-items: center; justify-content: center;
+      font-size: 11px; line-height: 1.2;
+    }
+    button.cell { background: var(--accent-soft); border-color: var(--accent-line); color: var(--accent-ink); font-weight: 700; }
+    button.cell:hover { background: var(--accent); border-color: var(--accent); color: #fff; }
+    button.cell small { font-weight: 500; opacity: .8; font-family: var(--mono); }
+    .cell.taken { background: var(--taken); color: var(--ink-3); }
+    .cell.none { color: var(--line); }
+    .legend { display: flex; gap: 14px; font-size: 12px; color: var(--ink-3); margin-top: 10px; align-items: center; }
+    .swatch { display: inline-block; width: 12px; height: 12px; border-radius: 4px; vertical-align: -2px; margin-right: 5px; }
+    .empty { padding: 36px 16px; text-align: center; color: var(--ink-3); }
+    .skeleton { height: 40px; border-radius: 9px; background: linear-gradient(90deg, var(--surface-2), var(--line), var(--surface-2)); background-size: 200% 100%; animation: shimmer 1.2s infinite; margin: 8px 12px; }
+    @keyframes shimmer { to { background-position: -200% 0; } }
+
+    /* ---- sheet, toast, busy ---- */
+    .overlay { position: fixed; inset: 0; z-index: 50; background: rgba(8, 14, 20, .5); display: flex; align-items: flex-end; justify-content: center; padding: 16px; }
+    .sheet { width: min(560px, 100%); max-height: 90vh; overflow: auto; background: var(--surface); border-radius: 18px; padding: 18px; box-shadow: var(--shadow); }
+    .sheet h2 { margin: 0; font-size: 17px; }
+    .sheet img { width: 100%; border-radius: 12px; border: 1px solid var(--line); margin-top: 12px; }
+    .sheet-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+    .notice { font-size: 13px; padding: 10px 12px; border-radius: 10px; background: var(--accent-soft); color: var(--accent-ink); margin-top: 10px; white-space: pre-wrap; word-break: break-all; }
+    .toast-box { position: fixed; z-index: 60; left: 50%; bottom: 20px; transform: translateX(-50%); display: grid; gap: 8px; width: min(420px, calc(100% - 32px)); }
+    .toast { padding: 11px 14px; border-radius: 12px; background: var(--ink); color: var(--surface); box-shadow: var(--shadow); font-size: 13px; animation: rise .2s ease-out; }
+    .toast.error { background: var(--danger); color: #fff; }
+    @keyframes rise { from { transform: translateY(8px); opacity: 0; } }
+    .busy { position: fixed; inset: 0; z-index: 55; display: grid; place-items: center; background: color-mix(in srgb, var(--bg) 70%, transparent); }
+    .busy-box { display: flex; gap: 10px; align-items: center; padding: 14px 18px; border-radius: 14px; background: var(--surface); box-shadow: var(--shadow); font-weight: 700; }
+    .spinner { width: 18px; height: 18px; border-radius: 50%; border: 2.5px solid var(--accent-soft); border-top-color: var(--accent); animation: spin .8s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 19 14.5 9.5"/><circle cx="17" cy="7" r="3.2"/><path d="M4 20l1-1"/></svg>
+        </div>
+        <div>
+          <div class="brand-name">Sport Flex</div>
+          <div class="brand-sub" id="venueInfo">讀取場館…</div>
+        </div>
+      </div>
+      <div class="picker"><label for="venueSelect">場館</label><select id="venueSelect"></select></div>
+      <div class="picker"><label for="accountSelect">帳號</label><select id="accountSelect"></select></div>
+      <span class="status" id="sessionPill"><span class="dot"></span><span id="sessionText">檢查登入…</span></span>
+    </div>
+  </header>
+
+  <main class="page">
+    <section class="login hidden" id="loginBox">
+      <strong>這個帳號尚未登入，搶訂前需要先登入</strong>
+      <button class="btn" id="loadCaptcha" type="button">顯示驗證碼</button>
+      <img id="captcha" alt="驗證碼" class="hidden" />
+      <input id="code" placeholder="驗證碼" autocomplete="off" />
+      <button class="btn btn-primary" id="doLogin" type="button">登入</button>
+      <span id="loginMsg"></span>
+    </section>
+
+    <div class="layout">
+      <!-- snipe -->
+      <section class="card sticky" aria-labelledby="snipeTitle">
+        <div class="card-head">
+          <h2 class="card-title" id="snipeTitle">搶尚未開放的場次</h2>
+        </div>
+        <div class="card-body">
+          <div class="release">
+            <div class="release-top">
+              <div>
+                <div class="release-label">下一波開放</div>
+                <div class="release-date" id="targetLabel">—</div>
+              </div>
+              <div class="release-label" id="opensLabel"></div>
+            </div>
+            <div class="countdown" id="countdown">--:--:--</div>
+            <div class="chips" id="ruleChips"></div>
+          </div>
+
+          <div class="divider"></div>
+
+          <div id="setupBox">
+            <div class="targets" id="targets"></div>
+            <button class="btn add-target" id="addTarget" type="button">＋ 再加一個目標</button>
+            <p class="hint" id="targetHint"></p>
+            <div style="margin-top:14px">
+              <button class="btn btn-primary btn-block" id="snipeBtn" type="button">開始搶訂</button>
+            </div>
+          </div>
+
+          <div id="runBox" class="hidden">
+            <div class="stepper" id="stepper"></div>
+            <div class="alert hidden" id="runAlert"></div>
+            <div id="runTargets"></div>
+            <button class="btn btn-danger btn-block" id="cancelBtn" type="button" style="margin-top:12px">取消搶訂</button>
+          </div>
+
+          <details class="log" id="logBox">
+            <summary>執行紀錄</summary>
+            <div class="log-lines" id="log"></div>
+          </details>
+          <div class="jobs" id="jobs"></div>
+        </div>
+      </section>
+
+      <!-- board -->
+      <section class="card" aria-labelledby="boardTitle">
+        <div class="card-head">
+          <h2 class="card-title" id="boardTitle">場地時段</h2>
+          <button class="icon-btn" id="reload" type="button" title="重新整理" aria-label="重新整理">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
+          </button>
+        </div>
+        <div class="card-body">
+          <div class="toolbar">
+            <div class="seg" id="sports" role="tablist" aria-label="運動種類"></div>
+            <div class="seg" id="periods" aria-label="時段">
+              <button type="button" class="active" data-from="" data-to="">全天</button>
+              <button type="button" data-from="06:00" data-to="12:00">上午</button>
+              <button type="button" data-from="12:00" data-to="18:00">下午</button>
+              <button type="button" data-from="18:00" data-to="23:00">晚上</button>
+            </div>
+          </div>
+          <div class="dates" id="dates"></div>
+          <div id="board"></div>
+          <div class="legend">
+            <span><span class="swatch" style="background:var(--accent-soft);border:1px solid var(--accent-line)"></span>可預約（點擊搶）</span>
+            <span><span class="swatch" style="background:var(--taken)"></span>已被預約</span>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <div id="busy" class="busy hidden"><div class="busy-box"><span class="spinner"></span><span id="busyText">處理中…</span></div></div>
+  <div id="modal" class="overlay hidden">
+    <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="resultTitle">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+        <h2 id="resultTitle">預約結果</h2>
+        <button class="btn btn-ghost" id="closeModal" type="button">關閉</button>
+      </div>
+      <div class="notice" id="resultText"></div>
+      <img id="resultImage" alt="網站畫面" />
+      <div class="sheet-actions" id="resultButtons"></div>
+    </div>
+  </div>
+  <div class="toast-box" id="toasts"></div>
+
+  <script>
+    const ANY = "";
+    const WEEK = "日一二三四五六";
+    const PHASES = [
+      { key: "armed", label: "已設定" },
+      { key: "ready", label: "待命" },
+      { key: "firing", label: "搶訂中" },
+      { key: "done", label: "完成" },
+    ];
+    const state = {
+      meta: null, venue: null, account: "", category: "", date: "", from: "", to: "",
+      courts: [], board: null, release: null, events: null, shownGrab: 0, snipe: null,
+    };
+    const $ = (id) => document.getElementById(id);
+    const json = (body) => ({ method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+
+    function el(tag, props = {}, children = []) {
+      const node = document.createElement(tag);
+      Object.entries(props).forEach(([key, value]) => {
+        if (key === "class") node.className = value;
+        else if (key === "text") node.textContent = value;
+        else if (key.startsWith("on")) node[key] = value;
+        else if (key === "dataset") Object.assign(node.dataset, value);
+        else node.setAttribute(key, value);
+      });
+      [].concat(children).filter(Boolean).forEach((child) => node.append(child));
+      return node;
+    }
+
+    function toast(text, kind = "") {
+      const node = el("div", { class: "toast " + kind, text });
+      $("toasts").append(node);
+      setTimeout(() => node.remove(), kind === "error" ? 6000 : 3500);
+    }
+
+    function busy(text) {
+      $("busyText").textContent = text || "處理中…";
+      $("busy").classList.toggle("hidden", !text);
+    }
+
+    function isoDate(day) {
+      return `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`;
+    }
+
+    function target(extra = {}) {
+      return { venue: state.venue.id, account: state.account, ...extra };
+    }
+
+    function query(extra = {}) {
+      return "?" + new URLSearchParams(target(extra)).toString();
+    }
+
+    async function api(url, options) {
+      const response = await fetch(url, options);
+      const data = await response.json();
+      if (!response.ok || data.ok === false) throw new Error(data.error || data.message || "失敗");
+      return data;
+    }
+
+    function localGet(key) {
+      try { return localStorage.getItem("sportflex." + key); } catch { return null; }
+    }
+
+    function localSet(key, value) {
+      try { localStorage.setItem("sportflex." + key, value); } catch { /* private mode */ }
+    }
+
+    const fmt = (minutes) => `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
+    const toMinutes = (hhmm) => { const [h, m] = hhmm.split(":").map(Number); return h * 60 + m; };
+
+    // ---- venue / account ---------------------------------------------
+
+    async function loadMeta() {
+      state.meta = await api("/api/meta");
+      const venues = $("venueSelect");
+      venues.replaceChildren(...state.meta.venues.map((venue) =>
+        el("option", { value: venue.id, text: venue.name.replace(/^(新北市|臺北市|台北市)/, "") })));
+      const saved = localGet("venue");
+      if (saved && state.meta.venues.some((venue) => venue.id === saved)) venues.value = saved;
+      await selectVenue(venues.value);
+    }
+
+    async function selectVenue(id) {
+      state.venue = state.meta.venues.find((venue) => venue.id === id);
+      localSet("venue", id);
+      state.category = state.venue.categories[0];
+      state.date = "";
+      const accounts = $("accountSelect");
+      accounts.replaceChildren(...state.meta.accounts
+        .filter((account) => account.provider === state.venue.provider)
+        .map((account) => el("option", { value: account.id, text: account.label + (account.ready ? "" : "（無法使用）") })));
+      const saved = localGet("account");
+      if (saved && [...accounts.options].some((option) => option.value === saved)) accounts.value = saved;
+      state.account = accounts.value;
+      const info = state.venue.info || {};
+      $("venueInfo").textContent = [state.venue.name, info.hours].filter(Boolean).join(" · ");
+      renderRuleChips();
+      renderSports();
+      state.courts = [];
+      renderTargets([{ courtId: ANY, time: "19:00" }]);
+      await refreshAll();
+    }
+
+    async function selectAccount(id) {
+      state.account = id;
+      localSet("account", id);
+      await refreshAll();
+    }
+
+    async function refreshAll() {
+      subscribe();
+      loadRelease();
+      await loadSession();
+      await loadCourts();
+      await loadBoard();
+    }
+
+    // ---- session -----------------------------------------------------
+
+    function showSession(data) {
+      const pill = $("sessionPill");
+      pill.classList.toggle("on", !!data.loggedIn);
+      pill.classList.toggle("off", !data.loggedIn);
+      $("sessionText").textContent = data.loggedIn ? `已登入 ${data.account.username}` : "尚未登入";
+      $("loginBox").classList.toggle("hidden", !!data.loggedIn);
+    }
+
+    async function loadSession() {
+      try {
+        showSession(await api("/api/session" + query()));
+      } catch (error) {
+        $("sessionText").textContent = error.message;
+      }
+    }
+
+    // ---- release & rules ---------------------------------------------
+
+    function renderRuleChips() {
+      const rules = state.venue.rules;
+      const chips = [
+        `可訂 ${rules.window_days} 天內`,
+        `每天 ${rules.release_time} 開放`,
+        `每次 ${rules.slot_hours} 小時`,
+        `每日上限 ${rules.max_hours_per_day} 小時`,
+      ];
+      if (rules.distinct_courts) chips.push("須不同場");
+      $("ruleChips").replaceChildren(...chips.map((text) => el("span", { class: "rule-chip", text })));
+    }
+
+    async function loadRelease() {
+      try {
+        state.release = await api("/api/release?venue=" + encodeURIComponent(state.venue.id));
+        $("targetLabel").textContent = state.release.targetLabel;
+        $("opensLabel").textContent = `${state.release.opensLabel} 開放`;
+        tickCountdown();
+      } catch (error) {
+        toast(error.message, "error");
+      }
+    }
+
+    function tickCountdown() {
+      if (!state.release) return;
+      const remain = new Date(state.release.opensAt) - Date.now();
+      const node = $("countdown");
+      node.classList.toggle("live", remain <= 0);
+      if (remain <= 0) {
+        node.textContent = "開放中";
+        if (remain < -5000) loadRelease();
+        return;
+      }
+      const total = Math.floor(remain / 1000);
+      const hours = Math.floor(total / 3600);
+      const minutes = Math.floor((total % 3600) / 60);
+      const seconds = total % 60;
+      node.textContent = [hours, minutes, seconds].map((part) => String(part).padStart(2, "0")).join(":");
+    }
+
+    // ---- targets -----------------------------------------------------
+
+    function maxTargets() {
+      const rules = state.venue.rules;
+      return Math.max(1, Math.floor(rules.max_hours_per_day / rules.slot_hours));
+    }
+
+    function timeOptions() {
+      const rules = state.venue.rules;
+      const length = rules.slot_hours * 60;
+      const options = [];
+      for (let start = 6 * 60; start + length <= 22 * 60; start += rules.align_minutes) {
+        options.push({ value: fmt(start), label: `${fmt(start)}–${fmt(start + length)}` });
+      }
+      return options;
+    }
+
+    function readTargets() {
+      return [...document.querySelectorAll(".target")].map((row) => ({
+        courtId: row.querySelector(".t-court").value,
+        time: row.querySelector(".t-time").value,
+      }));
+    }
+
+    function renderTargets(rows) {
+      const box = $("targets");
+      const times = timeOptions();
+      box.replaceChildren(...rows.map((row, index) => {
+        const court = el("select", { class: "field t-court", "aria-label": `目標 ${index + 1} 場地` }, [
+          el("option", { value: ANY, text: "任一場" }),
+          ...state.courts.map((item) => el("option", { value: item.id, text: item.name })),
+        ]);
+        court.value = state.courts.some((item) => item.id === row.courtId) ? row.courtId : ANY;
+        const time = el("select", { class: "field t-time", "aria-label": `目標 ${index + 1} 時間` },
+          times.map((item) => el("option", { value: item.value, text: item.label })));
+        if (times.some((item) => item.value === row.time)) time.value = row.time;
+        const remove = rows.length > 1
+          ? el("button", { class: "remove", type: "button", title: "移除", "aria-label": "移除", text: "×", onclick: () => {
+              const next = readTargets();
+              next.splice(index, 1);
+              renderTargets(next);
+            } })
+          : el("span");
+        return el("div", { class: "target" }, [el("span", { class: "target-no", text: String(index + 1) }), court, time, remove]);
+      }));
+      const full = rows.length >= maxTargets();
+      $("addTarget").classList.toggle("hidden", full);
+      const rules = state.venue.rules;
+      $("targetHint").textContent = rules.distinct_courts && rows.length > 1
+        ? "選「任一場」時會自動避開其他目標用到的場地。"
+        : "「任一場」會在開放瞬間用時段篩選找出所有空場，搶第一個有空的。";
+    }
+
+    // ---- snipe -------------------------------------------------------
+
+    async function startSnipe() {
+      const rows = readTargets();
+      const named = rows.map((row) => ({
+        ...row,
+        name: row.courtId ? (state.courts.find((item) => item.id === row.courtId) || {}).name : "任一場",
+      }));
+      const lines = named.map((row) => `・${row.name} ${row.time}`).join("\n");
+      const who = $("accountSelect").selectedOptions[0]?.textContent || state.account;
+      if (!confirm(`用「${who}」搶 ${state.venue.name}\n${state.release.targetLabel} ${state.category}\n${lines}\n\n${state.release.opensLabel} 看到空檔就送出，付款仍要你自己完成。`)) return;
+      try {
+        showSnipe(await api("/api/snipe", json(target({ enabled: true, category: state.category, targets: named }))));
+        toast("已設定搶訂，請保持程式開著");
+        loadJobs();
+      } catch (error) {
+        toast(error.message, "error");
+      }
+    }
+
+    async function cancelSnipe() {
+      if (state.snipe?.running && !confirm("取消這次搶訂？")) return;
+      try {
+        showSnipe(await api("/api/snipe", json(target({ enabled: false }))));
+        loadJobs();
+      } catch (error) {
+        toast(error.message, "error");
+      }
+    }
+
+    function showSnipe(data) {
+      state.snipe = data;
+      const running = data.running;
+      const showRun = running || data.phase === "done";
+      $("setupBox").classList.toggle("hidden", showRun && running);
+      $("runBox").classList.toggle("hidden", !showRun);
+      $("cancelBtn").textContent = running ? "取消搶訂" : "清除結果";
+      if (showRun) {
+        const phase = data.phase === "preparing" ? "ready" : data.phase === "need_login" ? "armed" : data.phase;
+        const current = PHASES.findIndex((item) => item.key === phase);
+        $("stepper").replaceChildren(...PHASES.map((item, index) => el("div", {
+          class: "step" + (index < current ? " done" : index === current ? " current" : ""),
+        }, [el("div", { class: "step-bar" }), el("span", { text: item.label })])));
+        const alertBox = $("runAlert");
+        alertBox.classList.toggle("hidden", data.phase !== "need_login");
+        alertBox.textContent = "登入已失效，請在上方輸入驗證碼重新登入，否則無法搶訂。";
+        $("runTargets").replaceChildren(...(data.targets || []).map((item) => {
+          const badge = item.status === "booked"
+            ? el("span", { class: "badge ok", text: `已送出${item.bookedName ? " · " + item.bookedName : ""}` })
+            : item.status === "skipped" ? el("span", { class: "badge skip", text: "略過" })
+            : el("span", { class: "badge", text: running ? "等待中" : "未搶到" });
+          return el("div", { class: "tstatus" }, [el("span", { text: `${item.name} · ${item.time}` }), badge]);
+        }));
+      }
+      if (data.phase === "need_login") $("loginBox").classList.remove("hidden");
+      const lines = data.log || [];
+      $("log").textContent = lines.join("\n") || "還沒有紀錄。";
+      if (running) $("logBox").open = true;
+    }
+
+    function showGrab(grabbed) {
+      if (grabbed && grabbed.at && grabbed.at !== state.shownGrab) {
+        state.shownGrab = grabbed.at;
+        showResult(grabbed);
+      }
+    }
+
+    function subscribe() {
+      if (state.events) state.events.close();
+      state.events = new EventSource("/api/events" + query());
+      state.events.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        showSnipe(data.snipe);
+        showSession(data.session);
+        showGrab(data.lastGrab);
+      };
+      loadJobs();
+    }
+
+    async function loadJobs() {
+      try {
+        const data = await api("/api/snipes");
+        const others = data.snipes.filter((job) => job.running && !(job.venue === state.venue.id && job.account === state.account));
+        $("jobs").textContent = others.length
+          ? "其他進行中的搶訂：" + others.map((job) => `${job.venue}/${job.account} ${job.release.targetLabel}`).join("、")
+          : "";
+      } catch { /* optional */ }
+    }
+
+    // ---- board -------------------------------------------------------
+
+    function renderSports() {
+      $("sports").replaceChildren(...state.venue.categories.map((name) => el("button", {
+        type: "button", role: "tab", class: name === state.category ? "active" : "", text: name,
+        onclick: () => {
+          state.category = name;
+          renderSports();
+          loadCourts();
+          loadBoard();
+        },
+      })));
+    }
+
+    function renderDates(start, end, current) {
+      const box = $("dates");
+      box.replaceChildren();
+      if (!start || !end) return;
+      const day = new Date(start + "T00:00:00");
+      const last = new Date(end + "T00:00:00");
+      const today = isoDate(new Date());
+      while (day <= last) {
+        const iso = isoDate(day);
+        const weekday = day.getDay();
+        const label = iso === today ? "今天" : "週" + WEEK[weekday];
+        box.append(el("button", {
+          type: "button",
+          class: "date" + (iso === current ? " active" : "") + (weekday === 0 || weekday === 6 ? " weekend" : ""),
+          onclick: () => { state.date = iso; loadBoard(); },
+        }, [el("span", { class: "wd", text: label }), el("span", { class: "md", text: `${day.getMonth() + 1}/${day.getDate()}` })]));
+        day.setDate(day.getDate() + 1);
+      }
+      box.querySelector(".active")?.scrollIntoView({ block: "nearest", inline: "center" });
+    }
+
+    function inWindow(time) {
+      const begin = time.split("-")[0].trim();
+      if (state.from && begin < state.from) return false;
+      if (state.to && begin >= state.to) return false;
+      return true;
+    }
+
+    function renderBoard(data) {
+      const board = $("board");
+      if (!data.courts.length) {
+        board.replaceChildren(el("div", { class: "empty", text: `${state.category}沒有可查的場地` }));
+        return;
+      }
+      const starts = [...new Set(data.courts.flatMap((court) => court.slots.map((slot) => slot.time.split("-")[0].trim())))]
+        .filter((start) => inWindow(start))
+        .sort();
+      if (!starts.length) {
+        board.replaceChildren(el("div", { class: "empty", text: "這個時段沒有資料" }));
+        return;
+      }
+      const head = el("tr", {}, [
+        el("th", { class: "court-col", text: "場地" }),
+        ...starts.map((start) => el("th", { text: start })),
+      ]);
+      const rows = data.courts.map((court) => {
+        const byStart = Object.fromEntries(court.slots.map((slot) => [slot.time.split("-")[0].trim(), slot]));
+        const open = court.slots.filter((slot) => slot.bookable && inWindow(slot.time)).length;
+        return el("tr", {}, [
+          el("th", { class: "court-col" }, [
+            el("div", { class: "court-name", text: court.name }),
+            el("div", { class: "court-meta", text: open ? `${open} 個空檔` : "已滿" }),
+          ]),
+          ...starts.map((start) => {
+            const slot = byStart[start];
+            if (!slot) return el("td", {}, el("span", { class: "cell none", text: "·" }));
+            if (!slot.bookable) return el("td", {}, el("span", { class: "cell taken", title: slot.status || "已被預約", text: "—" }));
+            return el("td", {}, el("button", {
+              type: "button", class: "cell", title: `搶 ${court.name} ${slot.time}`,
+              onclick: () => grab(court, slot),
+            }, [el("span", { text: "搶" }), el("small", { text: `$${slot.price}` })]));
+          }),
+        ]);
+      });
+      board.replaceChildren(el("div", { class: "grid-wrap" }, el("table", { class: "grid" }, [el("thead", {}, head), el("tbody", {}, rows)])));
+    }
+
+    async function loadBoard() {
+      $("board").replaceChildren(el("div", { class: "grid-wrap" }, [1, 2, 3, 4].map(() => el("div", { class: "skeleton" }))));
+      try {
+        const data = await api("/api/board" + query({ category: state.category, date: state.date }));
+        state.date = data.window.date || state.date;
+        state.board = data;
+        renderDates(data.window.start, data.window.end, state.date);
+        renderBoard(data);
+      } catch (error) {
+        $("board").replaceChildren(el("div", { class: "empty", text: error.message }));
+      }
+    }
+
+    async function loadCourts() {
+      try {
+        const data = await api("/api/courts" + query({ category: state.category }));
+        const rows = readTargets();
+        state.courts = data.courts;
+        renderTargets(rows.length ? rows : [{ courtId: ANY, time: "19:00" }]);
+      } catch (error) {
+        toast(error.message, "error");
+      }
+    }
+
+    // ---- grab / result -----------------------------------------------
+
+    async function grab(court, slot) {
+      if (!confirm(`搶 ${court.name}\n${state.date}  ${slot.time}\n$${slot.price}`)) return;
+      busy("搶位中…");
+      try {
+        showResult(await api("/api/grab", json(target({ category: state.category, courtId: court.id, date: state.date, slot }))));
+      } catch (error) {
+        toast(error.message, "error");
+      } finally {
+        busy("");
+      }
+    }
+
+    function showResult(result) {
+      $("resultTitle").textContent = [result.court, result.date, result.time].filter(Boolean).join(" · ") || "網站畫面";
+      $("resultText").textContent = (result.pressed
+        ? `已按「${result.pressed}」。如果下一步是付款，請自己按下面的按鈕，不會自動刷卡。`
+        : "已打開確認頁，付款按鈕不會自動按。") + (result.url ? `\n${result.url}` : "");
+      $("resultImage").src = "data:image/jpeg;base64," + result.image;
+      $("resultButtons").replaceChildren(...(result.buttons || [])
+        .filter((label) => !["×", "OK", "No", "Cancel"].includes(label))
+        .map((label) => {
+          const paying = label.includes("付款") || label.includes("支付");
+          return el("button", { type: "button", class: "btn " + (paying ? "btn-danger" : "btn-primary"), text: label, onclick: () => press(label) });
+        }));
+      $("modal").classList.remove("hidden");
+    }
+
+    async function press(label) {
+      const paying = label.includes("付款") || label.includes("支付");
+      if (paying && !confirm(`網站要「${label}」。確定繼續？`)) return;
+      busy("送出中…");
+      try {
+        showResult(await api("/api/press", json(target({ label }))));
+      } catch (error) {
+        toast(error.message, "error");
+      } finally {
+        busy("");
+      }
+    }
+
+    // ---- wiring ------------------------------------------------------
+
+    document.querySelectorAll("#periods button").forEach((button) => {
+      button.onclick = () => {
+        document.querySelectorAll("#periods button").forEach((item) => item.classList.remove("active"));
+        button.classList.add("active");
+        state.from = button.dataset.from;
+        state.to = button.dataset.to;
+        if (state.board) renderBoard(state.board);
+      };
+    });
+    $("venueSelect").onchange = (event) => selectVenue(event.target.value);
+    $("accountSelect").onchange = (event) => selectAccount(event.target.value);
+    $("reload").onclick = loadBoard;
+    $("addTarget").onclick = () => {
+      const rows = readTargets();
+      const last = rows[rows.length - 1];
+      const next = last ? fmt(Math.min(toMinutes(last.time) + state.venue.rules.slot_hours * 60, 21 * 60)) : "19:00";
+      renderTargets([...rows, { courtId: ANY, time: next }]);
+    };
+    $("snipeBtn").onclick = startSnipe;
+    $("cancelBtn").onclick = cancelSnipe;
+    $("closeModal").onclick = () => $("modal").classList.add("hidden");
+    $("modal").onclick = (event) => { if (event.target === $("modal")) $("modal").classList.add("hidden"); };
+    $("loadCaptcha").onclick = async () => {
+      $("loginMsg").textContent = "讀取驗證碼…";
+      try {
+        const data = await api("/api/captcha", json(target()));
+        $("captcha").src = "data:image/jpeg;base64," + data.image;
+        $("captcha").classList.remove("hidden");
+        $("loginMsg").textContent = "";
+        $("code").focus();
+      } catch (error) {
+        $("loginMsg").textContent = error.message;
+      }
+    };
+    $("doLogin").onclick = async () => {
+      try {
+        const data = await api("/api/login", json(target({ code: $("code").value })));
+        toast(data.message || "登入成功");
+        showSession(data);
+        await loadCourts();
+        await loadBoard();
+      } catch (error) {
+        $("loginMsg").textContent = error.message;
+      }
+    };
+    $("code").onkeydown = (event) => { if (event.key === "Enter") $("doLogin").click(); };
+
+    loadMeta().catch((error) => { $("venueInfo").textContent = error.message; });
+    setInterval(tickCountdown, 1000);
+    setInterval(loadJobs, 15000);
+  </script>
+</body>
+</html>

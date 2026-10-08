@@ -1,0 +1,34 @@
+# 新北市新店國民運動中心 — 長佳機電經營
+# 來源：https://www.xdsports.com.tw/zh_TW/stadiums/node/1573717241001
+id: xindian
+name: 新北市新店國民運動中心
+provider: changjia
+params:
+  lid: XDSC            # 長佳場地清單的 LID
+categories: [羽球, 籃球, 撞球, 壁球, 桌球, 排球]   # 第一個是預設
+
+rules:
+  timezone: Asia/Taipei
+  window_days: 14        # APP/網頁可預約當日起第 1~14 天
+  release_time: "06:00"  # 每天 06:00 開放第 14 天
+  slot_hours: 1          # 每次預約限 1 小時
+  align_minutes: 60
+  max_hours_per_day: 2   # 同一帳號每天最多 2 小時
+  distinct_courts: true  # 且須為不同場地
+  snipe_deadline_min: 3
+  prepare_lead_sec: 60
+  poll_sec: 1
+  throttle_backoff_sec: 8   # 網站回「請勿操作頻繁」時暫停
+
+prices:                  # 羽球，元/面/小時
+  peak: { price: 490, when: "週一至五 18–22；週六日 12–22" }
+  offpeak: { price: 290, when: "週一至五 06–18；週六日 06–12" }
+  racket_set: 50
+  racket: 30
+
+info:
+  address: 新北市新店區北新路一段88巷12號
+  phone: 02-6637-1800
+  hours: "06:00–22:00（除夕、初一休館）"
+  refund: "使用日前 3–7 天取消收 20% 手續費；前 2 天內不退費、不換時段；須本人至 1F 櫃台"
+  notes: "現場只能訂今明兩天；2025/7/1 起不接受電話預約；包場洽 3F 櫃台"

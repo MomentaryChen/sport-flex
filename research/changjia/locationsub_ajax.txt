@@ -1,0 +1,4 @@
+https://cdnjs.cloudflare.com/ajax/libs/SimpleLightbox/2.1.0/simpleLightbox.min.css
+https://cdnjs.cloudflare.com/ajax/libs/font-awesome/7.0.1/css/all.min.css
+https://fonts.googleapis.com/css?family=Merriweather+Sans:400,700
+https://fonts.googleapis.com/css?family=Merriweather:400,300,300italic,400italic,700,700italic

@@ -1,0 +1,192 @@
+<!-- Favicon-->
+<link rel="icon" type="image/x-icon" href="/assets/favicon.ico?v=1" />
+<!-- Bootstrap Icons-->
+<link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.5.0/font/bootstrap-icons.css" rel="stylesheet" />
+<!-- Google fonts-->
+<link href="https://fonts.googleapis.com/css?family=Merriweather+Sans:400,700" rel="stylesheet" />
+<link href="https://fonts.googleapis.com/css?family=Merriweather:400,300,300italic,400italic,700,700italic" rel="stylesheet" type="text/css" />
+<!-- SimpleLightbox plugin CSS-->
+<link href="https://cdnjs.cloudflare.com/ajax/libs/SimpleLightbox/2.1.0/simpleLightbox.min.css" rel="stylesheet" />
+<!-- Core theme CSS (includes Bootstrap)-->
+<link href="/css/styles.css" rel="stylesheet" />
+
+<!-- datatable -->
+<link rel="stylesheet" href="https://cdn.datatables.net/1.10.24/css/dataTables.bootstrap5.min.css">
+<link rel="stylesheet" href="https://cdn.datatables.net/responsive/2.2.7/css/responsive.dataTables.min.css">
+
+<!-- Font Awesome -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/7.0.1/css/all.min.css">
+<!DOCTYPE html>
+<html lang="zh">
+
+<head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+    <meta name="description" content="">
+    <meta name="author" content="">
+    <title>登入</title>
+    <!-- Head-->
+
+    <!-- css -->
+    <link href="css/login.css" rel="stylesheet" />
+</head>
+<style>
+    .back-btn {
+            position: absolute;
+            top: 28px;
+            left: 25px;
+            width: 40px;
+            height: 40px;
+            background-image:  url("/assets/icon/back.png"); 
+            background-size: cover; /* 圖像將填充整個容器 */
+            background-repeat: no-repeat; /* 避免圖像重複 */
+            background-position: center; /* 圖像在容器中居中 */
+        }
+    .back-btn a {
+        width: 100%;
+        height: 100%;
+        object-fit: cover; /* 圖像將填充容器，保持長寬比並裁剪不適合的部分 */
+    }
+    .form-floating .toggle-password-btn {
+        right: 1.75rem;
+        z-index: 5; /* 確保在紅框上面 */
+        border-style: none;
+    }
+    .form-floating .form-control {
+        padding-right: 2.5rem; /* 預留眼睛按鈕空間 */
+    }
+</style>
+
+<body class="bg-gradient-primary">
+    <!-- Navigation-->
+    
+    <!-- Masthead-->
+    <header class="masthead">
+    </header>
+    <div class="container">
+        <!-- Outer Row -->
+        <div class="row justify-content-center">
+            <!-- back-->
+            <!-- Login-->
+            <section class="page-section" id="contact">
+                <div class="container px-4 px-lg-5">
+                    
+                    <div class="col-lg-7 col-9">
+                        <div class="back-btn" onclick="document.getElementById('backForm').submit()"> </div><form id='backForm' action='https://changjia.sporetrofit.com/login/pre/' method='post'> </form>                    </div>
+                    <div class="row justify-content-center">
+                        <div class="col-lg-8 col-xl-6 text-center">
+                            <h2 class="mt-0">登入</h2>
+                        </div>
+                    </div>
+                    <div class="row gx-4 gx-lg-5 justify-content-center mb-5">
+                        <div class="col-lg-7 col-9">
+                            <form id="login">
+                                <div class="form-floating mb-3">
+                                    <input class="form-control" id="inputEmailAccount" name="email_account" type="text" placeholder="請輸入Email或參賽編號" />
+                                    <label for="inputEmailAccount">帳號:</label>
+                                </div>
+                                <div class="form-floating mb-3">
+                                    <input class="form-control" id="inputPassword" name="password" type="password" placeholder="密碼" />
+                                    <label for="inputPassword">密碼:</label>
+                                    <button type="button" 
+                                            class="btn btn-sm btn-outline-secondary position-absolute top-50 translate-middle-y me-2 toggle-password-btn"
+                                            data-target="inputPassword" >
+                                        <i class="fa fa-eye-slash"></i>
+                                    </button>
+                                </div>
+                                <div class="form-floating mb-3" id="captchaContainer">
+                                    <div class="input-group mb-3">
+                                        <input type="text" id="verification_code" name="verification_code" style="width:100px" placeholder="輸入驗證碼" onkeydown="checkEnter(event)" >
+                                        <button type="button" class="btn btn-login" onclick="reloadCaptcha()"><i class="fas fa-refresh"></i></button>
+                                        <img src="ajax/captcha.php" alt="輸入驗證碼">
+                                    </div>
+                                </div>
+                                <div class="row gx-4 gx-lg-5">
+                                    <div >
+                                        <div style="float:left"> 
+                                            <div onclick="document.getElementById('findAccountForm').submit();">
+                                                尋找帳號                                            </div>
+                                            
+                                        </div>
+                                        <div style="float:right"> 
+                                            <div onclick="document.getElementById('forgotPasswordForm').submit();">
+                                                忘記密碼                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </form>
+                            <form id="findAccountForm" action="findAccount.php" method="POST">
+                                                            </form>
+                            <form id="forgotPasswordForm" action="forgotPassword.php" method="POST">
+                                                            </form>
+                        </div>
+                        <div class = "col-lg-7 col-9">
+                            <div class="d-grid">
+                            <input class="btn btn-login mb-3" type="button" onclick="loginClick('')" value="登入">                            <button class="login-with-btn btn-line" onclick="LineAuth()"></button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </div>
+    </div>
+    <!-- Footer-->
+    <!-- Scripts -->
+    <!-- jquery JS -->
+<script src="/js/jquery.min.js"></script>
+<!-- Bootstrap core JS-->
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.0.1/dist/js/bootstrap.bundle.min.js"></script>
+<!-- Sweetalert2 JS-->
+<script src="https://cdn.jsdelivr.net/npm/sweetalert2@11.0.8/dist/sweetalert2.all.min.js"></script>
+<!-- validate -->
+<script src="https://cdn.jsdelivr.net/npm/jquery-validation@1.19.3/dist/jquery.validate.min.js"></script>
+
+<!-- Load the JS SDK asynchronously -->
+<script async defer crossorigin="anonymous" src="https://connect.facebook.net/en_US/sdk.js"></script>
+<!-- scripts js -->
+<script src="/js/scripts.js?v=1.015"></script>
+<!-- datatable -->
+<!-- <script src="https://cdn.datatables.net/1.10.24/js/dataTables.bootstrap5.min.js"></script>
+<script src="https://cdn.datatables.net/responsive/2.2.7/js/dataTables.responsive.min.js"></script> -->
+    <!-- js -->
+        <script src="js/login.js?v=1.0290350"></script>
+    <script>
+
+        function LineAuth() 
+        {
+            var URL = 'https://access.line.me/oauth2/v2.1/authorize?';
+            URL += 'response_type=code';
+            URL += '&client_id=1654161700'; // Note the & before client_id
+            URL += '&redirect_uri=https://changjia.sporetrofit.com/login/line/callback.php';
+            URL += '&scope=email%20openid%20profile';
+            URL += '&state=eyJ0b2tlbiI6ImZkMzJlMzgwNjI4MjZiMjE3Njk1MTA1ODYyN2FhOGZmIiwidmVyaWZ5IjoiYWMxMzY1MWNjM2NhNWMzZTdkZTFkYWM3NDU1YzAzODAifQ==';
+            window.open(URL);
+        }
+        ToggleAddListener();
+        function ToggleAddListener(){
+            document.querySelectorAll('.toggle-password-btn').forEach(btn => {
+                btn.addEventListener('click', function () {
+                    const targetId = this.getAttribute('data-target');
+                    togglePassword(targetId, this);
+                });
+            });
+        }
+        function togglePassword(inputId, btn) {
+            const input = document.getElementById(inputId);
+            const icon = btn.querySelector('i');
+        
+            if (input.type === 'password') {
+                input.type = 'text';
+                icon.classList.remove('fa-eye-slash');
+                icon.classList.add('fa-eye'); // 變成隱藏圖示
+            } else {
+                input.type = 'password';
+                icon.classList.remove('fa-eye');
+                icon.classList.add('fa-eye-slash'); // 變回顯示圖示
+            }
+        }
+    </script>
+ 
+</body>
+
+</html>

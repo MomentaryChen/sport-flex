@@ -1,0 +1,132 @@
+CategoryBtnDiv" style="display: flex; overflow-x: auto;">
+                    <span id="BADMINTON_btn" class="badge rounded-pill m-1   ">羽球</span><span id="BASKETBALL_btn" class="badge rounded-pill m-1   ">籃球</span><span id="BILLIARD_btn" class="badge rounded-pill m-1   ">撞球</span><span id="SQUASH_btn" class="badge rounded-pill m-1   ">壁球</span><span id="TABLETENNIS_btn" class="badge rounded-pill m-1   ">桌球</span><span id="VOLLEYBALL_btn" class="badge rounded-pill m-1   ">排球</span>                </div>
+                <div class="col-2 panel-heading panel-title text-center">
+                    <a class="bi bi-chevron-up" onclick="switchCategoryBtn()" data-bs-toggle="collapse" href="#collapseExample" role="button" aria-expanded="false" aria-controls="collapseExample"></a>
+                </div>
+            </div>
+        </div>
+        <!-- count -->
+    <!-- <h5>#筆結果</h5> -->
+    <!-- list -->
+    <div class="container" id='tableContainer'></div>
+    
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz" crossorigin="anonymous"></script>
+    <!-- Footer-->
+    <!-- Scripts -->
+    <!-- jquery JS -->
+<script src="/js/jquery.min.js"></script>
+<!-- Bootstrap core JS-->
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.0.1/dist/js/bootstrap.bundle.min.js"></script>
+<!-- Sweetalert2 JS-->
+<script src="https://cdn.jsdelivr.net/npm/sweetalert2@11.0.8/dist/sweetalert2.all.min.js"></script>
+<!-- validate -->
+<script src="https://cdn.jsdelivr.net/npm/jquery-validation@1.19.3/dist/jquery.validate.min.js"></script>
+
+<!-- Load the JS SDK asynchronously -->
+<script async defer crossorigin="anonymous" src="https://connect.facebook.net/en_US/sdk.js"></script>
+<!-- scripts js -->
+<script src="/js/scripts.js?v=1.015"></script>
+<!-- datatable -->
+<!-- <script src="https://cdn.datatables.net/1.10.24/js/dataTables.bootstrap5.min.js"></script>
+<script src="https://cdn.datatables.net/responsive/2.2.7/js/dataTables.responsive.min.js"></script> -->
+    <!-- js -->
+    <script>
+        
+                    $(function() {
+                            $('#BADMINTON_btn' ).click(function() {
+                                    
+                    $("[id*='_btn']").removeClass("active");
+                    $('#filterIcon').css('color', '#1E3050')
+                    $('#BADMINTON_btn' ).addClass("active");
+                 
+                        getLocationSubTableByCategory(
+                            '', 
+                            '', 
+                            'Badminton', 
+                            '[{"LID": "", "ItemID": "Badminton", "Name": "羽球", "ListOrder": "0"}, {"LID": "", "ItemID": "Basketball", "Name": "籃球", "ListOrder": "1"}, {"LID": "", "ItemID": "Billiard", "Name": "撞球", "ListOrder": "2"}, {"LID": "", "ItemID": "Squash", "Name": "壁球", "ListOrder": "3"}, {"LID": "", "ItemID": "TableTennis", "Name": "桌球", "ListOrder": "4"}, {"LID": "", "ItemID": "Volleyball", "Name": "排球", "ListOrder": "5"}]', 
+                            '', 
+                            '', 
+                            '', 
+                            '', 
+                            '', 
+                            'true', 
+                            'false', 
+                            '羽球', 
+                            '', 
+                            '', 
+                            '', 
+                            '', 
+                            ''
+                        );
+                        document.querySelector('form#filter_Form input[name="CategoryID"]').value = 'Badminton';
+                        document.querySelector('form#filter_Form input[name="CategoryName"]').value = '羽球';
+                    });
+                                    $('#BASKETBALL_btn' ).click(function() {
+                                    
+                    $("[id*='_btn']").removeClass("active");
+                    $('#filterIcon').css('color', '#1E3050')
+                    $('#BASKETBALL_btn' ).addClass("active");
+                 
+                        getLocationSubTableByCategory(
+                            '', 
+                            '', 
+                            'Basketball', 
+                            '[{"LID": "", "ItemID": "Badminton", "Name": "羽球", "ListOrder": "0"}, {"LID": "", "ItemID": "Basketball", "Name": "籃球", "ListOrder": "1"}, {"LID": "", "ItemID": "Billiard", "Name": "撞球", "ListOrder": "2"}, {"LID": "", "ItemID": "Squash", "Name": "壁球", "ListOrder": "3"}, {"LID": "", "ItemID": "TableTennis", "Name": "桌球", "ListOrder": "4"}, {"LID": "", "ItemID": "Volleyball", "Name": "排球", "ListOrder": "5"}]', 
+                            '', 
+                            '', 
+                            '', 
+                            '', 
+                            '', 
+                            'true', 
+                            'false', 
+                            '籃球', 
+                            '', 
+                            '', 
+                            '', 
+                            '', 
+                            ''
+                        );
+                        document.querySelector('form#filter_Form input[name="CategoryID"]').value = 'Basketball';
+                        document.querySelector('form#filter_Form input[name="CategoryName"]').value = '籃球';
+                    });
+                                    $('#BILLIARD_btn' ).click(function() {
+                                    
+                    $("[id*='_btn']").removeClass("active");
+                    $('#filterIcon').css('color', '#1E3050')
+                    $('#BILLIARD_btn' ).addClass("active");
+                 
+                        getLocationSubTableByCategory(
+                            '', 
+                            '', 
+                            'Billiard', 
+                            '[{"LID": "", "ItemID": "Badminton", "Name": "羽球", "ListOrder": "0"}, {"LID": "", "ItemID": "Basketball", "Name": "籃球", "ListOrder": "1"}, {"LID": "", "ItemID": "Billiard", "Name": "撞球", "ListOrder": "2"}, {"LID": "", "ItemID": "Squash", "Name": "壁球", "ListOrder": "3"}, {"LID": "", "ItemID": "TableTennis", "Name": "桌球", "ListOrder": "4"}, {"LID": "", "ItemID": "Volleyball", "Name": "排球", "ListOrder": "5"}]', 
+                            '', 
+                            '', 
+                            '', 
+                            '', 
+                            '', 
+                            'true', 
+                            'false', 
+                            '撞球', 
+                            '', 
+                            '', 
+                            '', 
+                            '', 
+                            ''
+                        );
+                        document.querySelector('form#filter_Form input[name="CategoryID"]').value = 'Billiard';
+                        document.querySelector('form#filter_Form input[name="CategoryName"]').value = '撞球';
+                    });
+                                    $('#SQUASH_btn' ).click(function() {
+                                    
+                    $("[id*='_btn']").removeClass("active");
+                    $('#filterIcon').css('color', '#1E3050')
+                    $('#SQUASH_btn' ).addClass("active");
+                 
+                        getLocationSubTableByCategory(
+                            '', 
+                            '', 
+                            'Squash', 
+                            '[{"LID": "", "ItemID": "Badminton", "Name": "羽球", "ListOrder": "0"}, {"LID": "", "ItemID": "Basketball", "Name": "籃球", "ListOrder": "1"}, {"LID": "", "ItemID": "Billiard", "Name": "撞球", "ListOrder": "2"}, {"LID": "", "ItemID": "Squash", "Name": "壁球", "ListOrder": "3"}, {"LID": "", "ItemID": "TableTennis", "Name": "桌球", "ListOrder": "4"}, {"LID": "", "ItemID": "Volleyball", "Name": "排球", "ListOrder": "5"}]', 
+                            '', 
+                    

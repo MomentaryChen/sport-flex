@@ -1,0 +1,247 @@
+url=https://changjia.sporetrofit.com/Location/LocationSubList/LocationSub/Reserve/
+len=35875
+
+URLS
+
+
+            //如果有收到特定時段
+            if (timeSlot) {
+                let selectedCheckbox = document.querySelector(`input[type=
+
+                })
+            
+            let selectStartDay
+            let selectEndDay
+
+            selectDayArr = [data.ResultData.ReservingStart, data.ResultData.ReservingEnd]
+
+            for (i in selectDayArr) {
+
+
+                let {
+                    year,
+                    month,
+                    day
+                } = spiltDateStr(selectDayArr[i])
+
+                // 创建Date对象(時間為當日凌晨00:00:00)
+                if (selectDayArr[i] === data.ResultData.ReservingStart) {
+                    selectStartDay = new Date(year, month, day);
+                } else {
+                    selectEndDay = new Date(year, month, day);
+                }
+
+
+            }
+
+
+
+
+            var calendarEl = document.getElementById(
+
+                })
+                //generateDataArray 函式由 generateDataArrayToolBox.js 提供
+                timeData = generateDataArray(data.ResultData.AvailableData)
+            
+
+            //ToDoList
+            //渲染日期可選的時段
+            let timeOptions = ``;
+            for (let i = 0; i < timeData.length; i++) {
+
+                let val = timeData[i][
+
+            let timeSlotElement = document.querySelector(`[id^=
+ ) {
+                        let price = timeData[i][
+${timeSlot}
+).disabled = true
+
+
+
+                        getResLocAvailInfo_Date(LID, LSID, info.dateStr)
+                    }
+
+                }
+            });
+            calendar.render();
+            //var nextMonth1stDay = date.getUTCFullYear() + 
+).forEach(time => {
+            time.style.display = 
+).submit()
+               
+    }
+
+    function backFromConfirmPage(LID, LSID, date, timeSlot) {
+        if (date && timeSlot) {
+            // 清除先前选中日期的背景颜色
+            document.querySelectorAll(
+);
+
+        // 將所有 checkbox 的 checked 狀態設為 false
+        checkboxes.forEach(checkbox => {
+            if (checkbox !== selectedCheckbox) {
+                checkbox.checked = false;
+            }
+        });
+
+        const  timeSlotCheckbox = document.querySelector(
+);
+
+        if (selectedCheckbox.checked && timeSlotCheckbox) {
+            document.getElementById(
+);
+            //ToDoList
+            // 渲染特定日期範圍的日曆
+            var calendar = new FullCalendar.Calendar(calendarEl, {
+                views: {
+                    dayGridMonth: { // name of view
+                        titleFormat: {
+                            year: 
+,
+                        click: function() {
+                            // 获取当前视图的日歷结束日期
+                            var endDate = calendar.view.currentEnd;
+
+                            // 判断当前视图的日歷结束日期是否超出最大允许日期
+                            if (endDate < selectEndDay) {
+                                calendar.next();
+                            } else {
+                                return;
+                            }
+                        }
+                    },
+                    myPrevButton: {
+                        text: 
+,
+                        click: function() {
+                            // 获取当前视图的日歷開始日期
+                            var StartDate = calendar.view.currentStart;
+
+                            // 判断当前视图的日歷開始日期是否超出最小允许日期
+                            if (StartDate > selectStartDay) {
+                                calendar.prev();
+                            } else {
+                                return;
+                            }
+                        }
+                    }
+                },
+                headerToolbar: {
+                    right: 
+,
+            allowOutsideClick: false,
+            showConfirmButton: false,
+            didOpen: () => { // 在彈窗完全開啟後再賦值
+                loading = Swal.getPopup(); // 取得彈窗對象
+            }
+        });
+
+
+        try {
+            let data;
+                            data = await $.ajax({
+                    url: 
+,
+            allowOutsideClick: false,
+            showConfirmButton: false,
+            didOpen: () => { // 在彈窗完全開啟後再賦值
+                loading = Swal.getPopup(); // 取得彈窗對象
+            }
+        });
+
+
+        try {
+            let data;
+            let timeData
+                            data = await $.ajax({
+                    url: 
+, error);
+        } finally {
+            if (loading) {
+                Swal.close();
+            } // 請求完成後關閉 Swal
+        }
+
+
+    }
+
+    function filterTimeSlot(startTime, endTime, thisElement) {
+
+        //切換按鈕樣式
+        document.querySelectorAll(
+, error);
+        } finally {
+            if (loading) {
+                Swal.close();
+            } // 請求完成後關閉 Swal
+        }
+
+    }
+
+    async function getResLocAvailInfo_Date(LID, LSID, dateStr, timeSlot) {
+        let loading
+        Swal.fire({
+            html: 
+../../../../assets/icon/calendar.png
+;
+        });
+
+
+        //顯示特定時段的row
+        for (let i = startTime; i < endTime; i++) {
+
+            let start = i.toString().padStart(2, 
+></div>
+    <!-- calendar ajax list -->
+    <div class=
+>選擇預約時段</small></p>
+    </h5>
+    <!-- time -->
+    <div class=
+]
+
+                                    //選擇可以被預約的時段
+                    if (timeData[i][
+]
+
+                        timeOptions +=
+                            `<div class=
+]
+                        let payImmediatelyAfterBooking = timeData[i][
+]`);
+
+
+            if (timeSlotElement) {
+                timeSlotElement.style.display = 
+calendar
+endTime
+filterTimeSlot
+filterTimeSlot(0,23,this)
+filterTimeSlot(12,18,this)
+filterTimeSlot(18,22,this)
+filterTimeSlot(6,12,this)
+https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.js
+https://cdnjs.cloudflare.com/ajax/libs/SimpleLightbox/2.1.0/simpleLightbox.min.css
+https://cdnjs.cloudflare.com/ajax/libs/font-awesome/7.0.1/css/all.min.css
+reserveMode
+row mb-3 mx-4 timeSlot
+selectedtimeSlotNum
+startTime
+time-
+time-${val}
+timeSlot
+timeSlot-${val}
+timeTable
+
+FUNCS
+backFromConfirmPage
+confirm
+filterTimeSlot
+getResLocAvailInfo
+getResLocAvailInfo_Date
+loadData
+renderLocationSubSelectionList
+selectOnlyOne
+selectOnlyOneLocationSub
+spiltDateStr

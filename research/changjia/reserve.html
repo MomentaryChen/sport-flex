@@ -1,0 +1,808 @@
+<!-- Favicon-->
+<link rel="icon" type="image/x-icon" href="/assets/favicon.ico?v=1" />
+<!-- Bootstrap Icons-->
+<link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.5.0/font/bootstrap-icons.css" rel="stylesheet" />
+<!-- Google fonts-->
+<link href="https://fonts.googleapis.com/css?family=Merriweather+Sans:400,700" rel="stylesheet" />
+<link href="https://fonts.googleapis.com/css?family=Merriweather:400,300,300italic,400italic,700,700italic" rel="stylesheet" type="text/css" />
+<!-- SimpleLightbox plugin CSS-->
+<link href="https://cdnjs.cloudflare.com/ajax/libs/SimpleLightbox/2.1.0/simpleLightbox.min.css" rel="stylesheet" />
+<!-- Core theme CSS (includes Bootstrap)-->
+<link href="/css/styles.css" rel="stylesheet" />
+
+<!-- datatable -->
+<link rel="stylesheet" href="https://cdn.datatables.net/1.10.24/css/dataTables.bootstrap5.min.css">
+<link rel="stylesheet" href="https://cdn.datatables.net/responsive/2.2.7/css/responsive.dataTables.min.css">
+
+<!-- Font Awesome -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/7.0.1/css/all.min.css">
+<form id='redirectForm' action='/login/pre/' method='post'><input type='hidden' name='LID' value='XDSC'><input type='hidden' name='LIDName' value='新北市新店國民運動中心'><input type='hidden' name='LSID' value='7F2BBadminton01'><input type='hidden' name='LSIDName' value='羽球場_A'><input type='hidden' name='LSIDEnName' value=''><input type='hidden' name='CategoryID' value='Badminton'><input type='hidden' name='CategoryName' value='羽球'><input type='hidden' name='CategoryArrayStr' value='[{&quot;LID&quot;: &quot;&quot;, &quot;ItemID&quot;: &quot;Badminton&quot;, &quot;Name&quot;: &quot;羽球&quot;, &quot;ListOrder&quot;: &quot;0&quot;}, {&quot;LID&quot;: &quot;&quot;, &quot;ItemID&quot;: &quot;Basketball&quot;, &quot;Name&quot;: &quot;籃球&quot;, &quot;ListOrder&quot;: &quot;1&quot;}, {&quot;LID&quot;: &quot;&quot;, &quot;ItemID&quot;: &quot;Billiard&quot;, &quot;Name&quot;: &quot;撞球&quot;, &quot;ListOrder&quot;: &quot;2&quot;}, {&quot;LID&quot;: &quot;&quot;, &quot;ItemID&quot;: &quot;Squash&quot;, &quot;Name&quot;: &quot;壁球&quot;, &quot;ListOrder&quot;: &quot;3&quot;}, {&quot;LID&quot;: &quot;&quot;, &quot;ItemID&quot;: &quot;TableTennis&quot;, &quot;Name&quot;: &quot;桌球&quot;, &quot;ListOrder&quot;: &quot;4&quot;}, {&quot;LID&quot;: &quot;&quot;, &quot;ItemID&quot;: &quot;Volleyball&quot;, &quot;Name&quot;: &quot;排球&quot;, &quot;ListOrder&quot;: &quot;5&quot;}]'><input type='hidden' name='minPrice' value='290'><input type='hidden' name='imageUrls' value=''><input type='hidden' name='description' value=''><input type='hidden' name='charge' value=''><input type='hidden' name='startDate' value=''><input type='hidden' name='endDate' value=''><input type='hidden' name='startTime' value=''><input type='hidden' name='endTime' value=''><input type='hidden' name='CategoryImgURL' value=''><input type='hidden' name='address' value=''><input type='hidden' name='phone' value=''><input type='hidden' name='businessHours' value=''><input type='hidden' name='imageUrl' value=''><input type='hidden' name='date' value=''><input type='hidden' name='timeSlot' value=''><input type='hidden' name='redirectFromIndex' value='true'><input type='hidden' name='redirectFromSearch' value='false'><input type='hidden' name='redirectFromFilter' value='false'><input type='hidden' name='reserveMode' value=''><input type='hidden' name='backUrl' value='https://changjia.sporetrofit.com/Location/LocationSubList/LocationSub/'></form><script>document.getElementById('redirectForm').submit();</script>
+
+<!DOCTYPE html>
+<html lang="zh">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>長佳機電 Web App-開始預約</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH" crossorigin="anonymous">
+
+    <link href="../../../../css/index.css?v=1.0112" rel="stylesheet" />
+    <script src='https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.js'></script>
+
+
+</head>
+<style>
+    i.fa {
+        color: black !important;
+    }
+
+    .fc-header-toolbar {
+        margin: 0 10 24 10;
+    }
+
+    /* 自定义点击后的背景颜色 */
+    .fc-day-clicked {
+        background-color: #ffc107 !important;
+    }
+
+    .timeslot {
+        font-family: TC;
+        font-size: 20px;
+    }
+
+    .form-check-input[type=checkbox] {
+        border-radius: 50% !important;
+    }
+
+    /* 移除文字底線 */
+    .fc-col-header-cell-cushion,
+    .fc-event-title,
+    .fc-daygrid-day-number,
+    .fc-toolbar-title,
+    .fc {
+        text-decoration: none;
+    }
+
+    .fc-col-header-cell-cushion {
+        font-size: 28px !important;
+        color: black;
+    }
+
+    .fc-col-header-cell-cushion {
+        font-size: 24px !important;
+        color: black;
+    }
+
+    .fc-daygrid-day-number {
+        font-size: 22px !important;
+        text-align: left;
+        vertical-align: middle;
+        display: block;
+        color: darkgray;
+    }
+
+    .fc-theme-standard td,
+    .fc-theme-standard th,
+    .fc-scrollgrid,
+    .fc-col-header-cell,
+    .fc-day,
+    .fc-scrollgrid-sync-inner,
+    .fc-daygrid-day-frame {
+        border: none;
+    }
+
+    /* 隱藏事件 */
+    .fc-event {
+        display: none;
+    }
+
+    .fc-bg,
+    .fc-daygrid-day-events,
+    .fc-daygrid-event-harness {
+        display: none;
+    }
+</style>
+
+<body>
+    <!-- nav -->
+    <div class="container text-center p-3">
+        <div class="row" style="background: url('');background: rgba(255, 0, 0, 0.0);">
+            <!-- 因為locationSub相關頁 有可能返回登入頁所以不使用window.history.back()方法 -->
+            <div class="col">
+                        <div class="back-btn"  onclick="document.getElementById('back-btn_Form').submit()"> </div>
+                        <form id='back-btn_Form' action='/Location/LocationSubList/LocationSub/' method='post' style='display: none;'>
+                            <input type='hidden' name='CategoryArrayStr' value='[{"LID": "", "ItemID": "Badminton", "Name": "羽球", "ListOrder": "0"}, {"LID": "", "ItemID": "Basketball", "Name": "籃球", "ListOrder": "1"}, {"LID": "", "ItemID": "Billiard", "Name": "撞球", "ListOrder": "2"}, {"LID": "", "ItemID": "Squash", "Name": "壁球", "ListOrder": "3"}, {"LID": "", "ItemID": "TableTennis", "Name": "桌球", "ListOrder": "4"}, {"LID": "", "ItemID": "Volleyball", "Name": "排球", "ListOrder": "5"}]'>
+
+                            <input type='hidden' name='LID' value='XDSC'>
+                            <input type='hidden' name='LIDName' value='新北市新店國民運動中心'>
+                            <input type='hidden' name='CategoryID' value='Badminton'>
+                            <input type='hidden' name='CategoryName' value='羽球'>
+
+                            <input type='hidden' name='LSID' value='7F2BBadminton01'>
+                            <input type='hidden' name='LSIDName' value='羽球場_A'>
+                            <input type='hidden' name='LSIDEnName' value=''>
+                            <input type='hidden' name='minPrice' value='290'>
+                            <input type='hidden' name='imageUrls' value=''>
+                            <input type='hidden' name='description' value=''>
+                            <input type='hidden' name='charge' value=''>
+                            <input type='hidden' name='startDate' value=''>
+                            <input type='hidden' name='endDate' value=''>
+                            <input type='hidden' name='startTime' value=''>
+                            <input type='hidden' name='endTime' value=''>
+                            <input type='hidden' name='date' value=''>
+                            <input type='hidden' name='timeSlot' value=''>
+
+                            <input type='hidden' name='CategoryImgURL' value=''>
+                            <input type='hidden' name='address' value=''>
+                            <input type='hidden' name='phone' value=''>
+                            <input type='hidden' name='businessHours' value=''>
+                            <input type='hidden' name='imageUrl' value=''>
+                            <input type='hidden' name='redirectFromIndex' value='true'>
+                            <input type='hidden' name='redirectFromSearch' value='false'>
+                            <input type='hidden' name='redirectFromFilter' value='false'>
+                        </form></div>
+            <div class="col">
+                <h5>開始預約</h5>
+            </div>
+            <div class="col"></div>
+        </div>
+        <!-- nav detail -->
+        <div class="row">
+                            <div class="col-3">
+                    <img src="" class="img-fluid" alt="...">
+                </div>
+                <div class="col-6" style="text-align:left">
+                    <p class="m-0 bold">羽球場_A<!--場地名稱--></p>
+                    <p class="m-0"><small class="text-muted">新北市新店國民運動中心<!--場館名稱--></small></p>
+                </div>
+                <div class="col-3">
+                    <span class="m-0">
+                        $<small class="text-muted bold">290<!--價格--></small>起
+                    </span>
+                </div>
+                    </div>
+    </div>
+
+    <!-- header -->
+    <h5 class="px-3">
+        <p class="m-0"><small class="text-muted">選擇預約時段</small></p>
+    </h5>
+    <!-- time -->
+    <div class="px-3" id="filterTimeSlot" style="display: inline-block;">
+        <span class="badge rounded-pill button" onclick="filterTimeSlot(0,23,this)">全時段</span>
+        <span class="badge rounded-pill button-reverse" onclick="filterTimeSlot(6,12,this)">06-12</span>
+        <span class="badge rounded-pill button-reverse" onclick="filterTimeSlot(12,18,this)">12-18</span>
+        <span class="badge rounded-pill button-reverse" onclick="filterTimeSlot(18,22,this)">18-22</span>
+    </div>
+    <!-- calendar -->
+    <div id='calendar' style='margin-top: 16px;'></div>
+    <!-- calendar ajax list -->
+    <div class="container text-center p-3">
+        <div class="row">
+            <div class="col" style="text-align:left">
+                <img class="me-1" src="../../../../assets/icon/calendar.png">
+                <label id='selectDate'> 2026-10-08</label>
+            </div>
+        </div>
+    </div>
+
+    <!-- 時間表 -->
+    <div id='timeTable' class="container text-center p-3 " style="display:none;">
+
+    </div>
+    
+    <!-- nav bottom -->
+    <div class="container p-0">
+        <nav class="navbar  navbar-light bg-light">
+            <div class="container">
+                <div class="w-100 row">
+                    <div class="col-5">
+                        <p class="m-0">
+                            <small class="text-muted">
+                                已選擇<span id="selectedtimeSlotNum" class="bold mx-1">0</span>個時段
+                            </small>
+                        </p>
+                        <p id="price" class="m-0">
+                            $0<!--價格-->
+                        </p>
+                    </div>
+                    <div class="col-7">
+                        <div class="d-grid gap-2">
+                            <button disabled type="button" id="confirmBtn" class="btn font-reverse" onclick="confirm()">下一步</button>
+                            <form id="confirm_Form" action="./confirm.php" method="post" style="display: none;">
+                                <input type="hidden" name="LID" value="XDSC">
+                                <input type="hidden" name="LIDName" value="新北市新店國民運動中心">
+                                <input type="hidden" name="CategoryID" value="Badminton">
+                                <input type="hidden" name="CategoryName" value="羽球">
+                                <input type="hidden" name="LSID" value="7F2BBadminton01">
+                                <input type="hidden" name="LSIDName" value="羽球場_A">
+                                <input type="hidden" name="CategoryArrayStr" value='[{"LID": "", "ItemID": "Badminton", "Name": "羽球", "ListOrder": "0"}, {"LID": "", "ItemID": "Basketball", "Name": "籃球", "ListOrder": "1"}, {"LID": "", "ItemID": "Billiard", "Name": "撞球", "ListOrder": "2"}, {"LID": "", "ItemID": "Squash", "Name": "壁球", "ListOrder": "3"}, {"LID": "", "ItemID": "TableTennis", "Name": "桌球", "ListOrder": "4"}, {"LID": "", "ItemID": "Volleyball", "Name": "排球", "ListOrder": "5"}]'>
+                                <input type="hidden" name="imageUrls" value="">
+                                <input type="hidden" name="minPrice" value="290">
+                                <input type="hidden" name="description" value="">
+                                <input type="hidden" name="charge" value="">
+                                <input type="hidden" name="startDate" value="">
+                                <input type="hidden" name="endDate" value="">
+                                <input type="hidden" name="startTime" value="">
+                                <input type="hidden" name="endTime" value="">
+                                <input type="hidden" name="CategoryImgURL" value="">
+                                <input type="hidden" name="address" value="">
+                                <input type="hidden" name="phone" value="">
+                                <input type="hidden" name="businessHours" value="">
+                                <input type="hidden" name="imageUrl" value="">
+                                <input type="hidden" name="redirectFromIndex" value="true">
+                                <input type="hidden" name="redirectFromSearch" value="false">
+                                <input type="hidden" name="redirectFromFilter" value="false">
+                                <input type="hidden" name="date">
+                                <input type="hidden" name="timeSlot">
+                                <input type="hidden" name="price">
+                                <input type="hidden" name="payImmediatelyAfterBooking">
+                                <input type="hidden" name="reserveMode" value="">
+                            </form>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </nav>
+    </div>
+</body>
+<!-- Footer-->
+<!-- Scripts -->
+<!-- jquery JS -->
+<script src="/js/jquery.min.js"></script>
+<!-- Bootstrap core JS-->
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.0.1/dist/js/bootstrap.bundle.min.js"></script>
+<!-- Sweetalert2 JS-->
+<script src="https://cdn.jsdelivr.net/npm/sweetalert2@11.0.8/dist/sweetalert2.all.min.js"></script>
+<!-- validate -->
+<script src="https://cdn.jsdelivr.net/npm/jquery-validation@1.19.3/dist/jquery.validate.min.js"></script>
+
+<!-- Load the JS SDK asynchronously -->
+<script async defer crossorigin="anonymous" src="https://connect.facebook.net/en_US/sdk.js"></script>
+<!-- scripts js -->
+<script src="/js/scripts.js?v=1.015"></script>
+<!-- datatable -->
+<!-- <script src="https://cdn.datatables.net/1.10.24/js/dataTables.bootstrap5.min.js"></script>
+<script src="https://cdn.datatables.net/responsive/2.2.7/js/dataTables.responsive.min.js"></script> -->
+<!-- js -->
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz" crossorigin="anonymous"></script>
+<script src="../../../../js/generateDataArrayToolBox.js?v=1.1"></script>
+
+<script>
+    //TDL
+    //1.啟動時先帶入LIDLSID動先輸入時間, 取得可用日期
+
+    //getResLocAvailInfo(LID,LSID,"");
+
+    // 2.點選日期 Date 跳出可用時間
+    // getResLocAvailInfo_Date(LID,LSID,Date);
+
+    // 3.選擇時間, 前往預約 
+
+
+     loadData('XDSC', '7F2BBadminton01', '', '')
+
+
+
+    function spiltDateStr(dateStr) {
+        let parts = dateStr.split("-");
+
+        // 提取年份、月份和日期部分
+        let year = parseInt(parts[0], 10);
+        let month = parseInt(parts[1], 10) - 1; // 月份需要减1，因为JavaScript中的月份从0开始
+        let day = parseInt(parts[2], 10);
+
+        return {
+            year,
+            month,
+            day
+        }
+
+    }
+
+
+    async function getResLocAvailInfo(LID, LSID, dateStr) {
+        let loading
+        Swal.fire({
+            html: '<img src="../../../../assets/gif/loading.gif" style="width: 100px; height: 100px;">',
+            allowOutsideClick: false,
+            showConfirmButton: false,
+            didOpen: () => { // 在彈窗完全開啟後再賦值
+                loading = Swal.getPopup(); // 取得彈窗對象
+            }
+        });
+
+
+        try {
+            let data;
+                            data = await $.ajax({
+                    url: "../../../../api/getRequestData.php",
+                    data: {
+                        'serviceName': 'getResLocationAvailableData',
+                        'LID': LID,
+                        'LSID': LSID,
+                        'QueryDate': dateStr
+                    },
+                    dataType: 'JSON',
+                    type: 'POST'
+                })
+            
+            let selectStartDay
+            let selectEndDay
+
+            selectDayArr = [data.ResultData.ReservingStart, data.ResultData.ReservingEnd]
+
+            for (i in selectDayArr) {
+
+
+                let {
+                    year,
+                    month,
+                    day
+                } = spiltDateStr(selectDayArr[i])
+
+                // 创建Date对象(時間為當日凌晨00:00:00)
+                if (selectDayArr[i] === data.ResultData.ReservingStart) {
+                    selectStartDay = new Date(year, month, day);
+                } else {
+                    selectEndDay = new Date(year, month, day);
+                }
+
+
+            }
+
+
+
+
+            var calendarEl = document.getElementById('calendar');
+            //ToDoList
+            // 渲染特定日期範圍的日曆
+            var calendar = new FullCalendar.Calendar(calendarEl, {
+                views: {
+                    dayGridMonth: { // name of view
+                        titleFormat: {
+                            year: 'numeric',
+                            month: '2-digit'
+                        }
+                        // other view-specific options here
+                    }
+                },
+                customButtons: {
+                    myNextButton: {
+                        text: '>',
+                        click: function() {
+                            // 获取当前视图的日歷结束日期
+                            var endDate = calendar.view.currentEnd;
+
+                            // 判断当前视图的日歷结束日期是否超出最大允许日期
+                            if (endDate < selectEndDay) {
+                                calendar.next();
+                            } else {
+                                return;
+                            }
+                        }
+                    },
+                    myPrevButton: {
+                        text: '<',
+                        click: function() {
+                            // 获取当前视图的日歷開始日期
+                            var StartDate = calendar.view.currentStart;
+
+                            // 判断当前视图的日歷開始日期是否超出最小允许日期
+                            if (StartDate > selectStartDay) {
+                                calendar.prev();
+                            } else {
+                                return;
+                            }
+                        }
+                    }
+                },
+                headerToolbar: {
+                    right: 'myPrevButton,myNextButton today', // 使用自定义的 myNextButton
+                    left: 'title',
+                },
+                dayHeaderContent: function(arg) {
+                    // 自訂顯示
+                    const days = ['日', '一', '二', '三', '四', '五', '六'];
+                    return days[arg.date.getUTCDay()];
+                },
+                // validRange: {
+                //             start: selectStartDay,
+                //         //最終日期需多加一天(因為顯示範圍不包括end的日期)
+                //             end: selectEndDay
+                //     },
+                dayCellDidMount: function(info) {
+                    var date = info.date;
+                    var dateElementNum = info.el.querySelector('.fc-daygrid-day-number');
+                    var dateElementTop = info.el.querySelector('.fc-daygrid-day-top');
+                    dateElementTop.style.alignItems = 'center';
+                    dateElementTop.style.justifyContent = "center"
+
+                    //console.log(dateElementTop.parentNode.parentNode.parentNode.nodeName);
+                    var trNode = dateElementTop.parentNode.parentNode.parentNode;
+                    trNode.style.height = "40px";
+                    var tdNode = dateElementTop.parentNode.parentNode;
+                    tdNode.style.height = "40px";
+
+                    var dateElementEvents = info.el.querySelector('.fc-daygrid-day-events');
+                    if (dateElementEvents) {
+                        dateElementEvents.remove();
+                    }
+                    var dateElementGridTd = info.el.querySelector('.fc-daygrid-day');
+                    if (dateElementGridTd) {
+                        dateElementGridTd.style.height = '100%';
+                    }
+
+                    var dateElementGrid = info.el.querySelector('.fc-daygrid-day-frame');
+                    if (dateElementGrid) {
+                        dateElementGrid.classList.remove("fc-daygrid-day-frame");
+                        dateElementGrid.classList.remove("fc-scrollgrid-sync-inner");
+                    }
+
+                    // var dayTable = document.getElementsByClassName("fc-scrollgrid-sync-table');
+                    // if(dayTable && dayTable.getElementsByTagName("tr"))
+                    // {
+                    //     Array.prototype.forEach.call(dayTable.getElementsByTagName("tr"), function(element) {
+                    //         element.style.height = "40px";
+                    //     }); 
+                    // }
+
+
+                    // 比較日期，並將符合條件的日期文字設置為紅色
+                    if (date < selectStartDay || date > selectEndDay) { //disable zone
+                        if (dateElementNum) {
+                            dateElementNum.style.color = 'lightgray';
+                            dateElementNum.style.fontWeight = "lighter"
+                            dateElementNum.style.pointerEvents = 'none'; // 禁用點擊事件
+                            dateElementNum.style.cursor = 'default'; // 更改游標樣式
+                        }
+                    } else {
+                        if (dateElementNum) {
+                            dateElementNum.style.color = 'red';
+                            dateElementNum.style.fontWeight = "bolder !important";
+                            dateElementNum.parentNode.parentNode.parentNode.classList.remove("fc-day-other");
+                        }
+                    }
+
+                },
+
+                dateClick: function(info) {
+
+
+                    let {
+                        year,
+                        month,
+                        day
+                    } = spiltDateStr(info.dateStr)
+
+                    let date = new Date(year, month, day)
+
+
+
+                    // 比較日期，並將符合條件的日期文字設置為紅色
+                    if (date < selectStartDay || date > selectEndDay) { //disable zone
+                    } else {
+                        // 清除先前选中日期的背景颜色
+                        document.querySelectorAll('.fc-day').forEach(function(day) {
+                            day.classList.remove('fc-day-clicked');
+                        });
+
+                        // 为点击的日期添加自定义的背景颜色
+                        info.dayEl.classList.add('fc-day-clicked');
+
+                        document.getElementById("selectDate").textContent = info.dateStr;
+
+                        document.getElementById("confirmBtn").disabled = true
+
+
+
+                        getResLocAvailInfo_Date(LID, LSID, info.dateStr)
+                    }
+
+                }
+            });
+            calendar.render();
+            //var nextMonth1stDay = date.getUTCFullYear() + '-' + ("0"+(date.getUTCMonth()+1)).slice(-2) +"-"+ ("01");
+            Array.prototype.forEach.call(document.getElementsByClassName("fc-today-button"), function(element) {
+                // Use `element` here
+                element.style.display = "none";
+            });
+
+
+            // Array.prototype.forEach.call(document.getElementsByClassName("fc-prev-button"), function(element) {
+            //     // Use `element` here
+            //     element.style.display = "none";
+            // }); 
+            // Array.prototype.forEach.call(document.getElementsByClassName("fc-next-button"), function(element) {
+            //     // Use `element` here
+            //     element.style.display = "none";
+            // }); 
+
+            // let nextBtn = document.querySelector('.fc-myNextButton-button')
+            // let prevBtn = document.querySelector('.fc-myPrevButton-button')
+
+
+
+
+
+            document.querySelector('.fc-myNextButton-button').style.color = "#0CB4B5"
+            document.querySelector('.fc-myNextButton-button').style.backgroundColor = "white"
+            document.querySelector('.fc-myNextButton-button').style.fontSize = "36px"
+            document.querySelector('.fc-myNextButton-button').style.border = 0
+
+            document.querySelector('.fc-myPrevButton-button').style.color = "#0CB4B5"
+            document.querySelector('.fc-myPrevButton-button').style.backgroundColor = "white"
+            document.querySelector('.fc-myPrevButton-button').style.fontSize = "36px"
+            document.querySelector('.fc-myPrevButton-button').style.border = 0
+
+            //移除預設button樣式
+
+            document.querySelector('.fc-myNextButton-button').classList.remove('fc-button');
+            document.querySelector('.fc-myNextButton-button').classList.remove('fc-button-primary');
+
+            document.querySelector('.fc-myPrevButton-button').classList.remove('fc-button');
+            document.querySelector('.fc-myPrevButton-button').classList.remove('fc-button-primary');
+
+
+
+
+            // Array.prototype.forEach.call(document.getElementsByClassName("fc-day-disabled"), function(element) {
+            //     // Use `element` here
+            //     element.style.backgroundcolor= "#fff"; /* 將不可選日期設為灰色 */
+            //     element.style.color= "#f0f0f0"; /* 調整不可選日期的文字顏色 */
+            //     element.style.pointerevents= "none"; /* 禁用點擊事件 */
+            // }); 
+
+        } catch (error) {
+            console.error('Error:', error);
+        } finally {
+            if (loading) {
+                Swal.close();
+            } // 請求完成後關閉 Swal
+        }
+
+    }
+
+    async function getResLocAvailInfo_Date(LID, LSID, dateStr, timeSlot) {
+        let loading
+        Swal.fire({
+            html: '<img src="../../../../assets/gif/loading.gif" style="width: 100px; height: 100px;">',
+            allowOutsideClick: false,
+            showConfirmButton: false,
+            didOpen: () => { // 在彈窗完全開啟後再賦值
+                loading = Swal.getPopup(); // 取得彈窗對象
+            }
+        });
+
+
+        try {
+            let data;
+            let timeData
+                            data = await $.ajax({
+                    url: "../../../../api/getRequestData.php",
+                    data: {
+                        'serviceName': 'getResLocationAvailableData',
+                        'LID': LID,
+                        'LSID': LSID,
+                        'QueryDate': dateStr
+                    },
+                    dataType: 'JSON',
+                    type: 'POST'
+                })
+                //generateDataArray 函式由 generateDataArrayToolBox.js 提供
+                timeData = generateDataArray(data.ResultData.AvailableData)
+            
+
+            //ToDoList
+            //渲染日期可選的時段
+            let timeOptions = ``;
+            for (let i = 0; i < timeData.length; i++) {
+
+                let val = timeData[i]["Time"]
+
+                                    //選擇可以被預約的時段
+                    if (timeData[i]["allowBooking"] !== "N" ) {
+                        let price = timeData[i]["Price"]
+                        let payImmediatelyAfterBooking = timeData[i]["PayImmediatelyAfterBooking"]
+
+                        timeOptions +=
+                            `<div class="row mb-3 mx-4 timeSlot" id="time-${val}">
+                                <div class="col-8" style="text-align:left; ">                        
+                                    <label for="timeSlot-${val}"><b><font color = "darkgray">|</font>&nbsp</b> ${val}</label>
+                                </div>
+                                <div class="col-4" style="text-align:right">
+                                    <input class="form-check-input" type="checkbox" onclick="selectOnlyOne(this)" name="timeSlot" id="timeSlot-${val}" value="${val}" data-price="${price}"  data-payImmediatelyAfterBooking="${payImmediatelyAfterBooking}"   aria-label="...">
+                                </div>
+                            </div></div>`
+                    }
+                   
+                
+
+
+
+            }
+
+            document.getElementById('timeTable').innerHTML = timeOptions
+
+            document.getElementById("timeTable").style.display = "block";
+
+            document.getElementById('selectedtimeSlotNum').innerText = "0"
+
+            document.getElementById("price").textContent = "$0"
+
+            //如果有收到特定時段
+            if (timeSlot) {
+                let selectedCheckbox = document.querySelector(`input[type="checkbox"][name="timeSlot"][value="${timeSlot}"]`)
+                selectedCheckbox.checked = true
+                selectOnlyOne(selectedCheckbox)
+            }
+
+            
+
+        } catch (error) {
+            console.error('Error:', error);
+        } finally {
+            if (loading) {
+                Swal.close();
+            } // 請求完成後關閉 Swal
+        }
+
+
+    }
+
+    function filterTimeSlot(startTime, endTime, thisElement) {
+
+        //切換按鈕樣式
+        document.querySelectorAll('#filterTimeSlot span').forEach(span => {
+            span.classList.remove("button")
+            span.classList.add("button-reverse")
+        })
+
+        thisElement.classList.remove("button-reverse")
+        thisElement.classList.add("button")
+
+        //將所有時段row隱藏
+        document.querySelectorAll('div[id^="time-"]').forEach(time => {
+            time.style.display = "none";
+        });
+
+
+        //顯示特定時段的row
+        for (let i = startTime; i < endTime; i++) {
+
+            let start = i.toString().padStart(2, '0') + ':00'
+            let end = (i + 1).toString().padStart(2, '0') + ':00'
+            let timeSlotElement = document.querySelector(`[id^="time-${start}"]`);
+
+
+            if (timeSlotElement) {
+                timeSlotElement.style.display = "flex";
+            }
+
+        }
+    }
+
+    function selectOnlyOne(selectedCheckbox) {
+        // 取得所有的 checkbox
+        const checkboxes = document.querySelectorAll('input[type="checkbox"][name="timeSlot"]');
+
+        // 將所有 checkbox 的 checked 狀態設為 false
+        checkboxes.forEach(checkbox => {
+            if (checkbox !== selectedCheckbox) {
+                checkbox.checked = false;
+            }
+        });
+
+        if (selectedCheckbox.checked) {
+            document.getElementById('selectedtimeSlotNum').innerText = "1"
+        } else {
+            document.getElementById('selectedtimeSlotNum').innerText = "0"
+        }
+
+
+                    if (selectedCheckbox.checked) {
+                document.getElementById("price").textContent = "$" + selectedCheckbox.dataset.price
+                //解鎖btn
+                document.getElementById("confirmBtn").disabled = false
+            } else {
+                document.getElementById("price").textContent = "$0"
+                //鎖住btn
+                document.getElementById("confirmBtn").disabled = true
+            }
+        
+
+
+    }
+
+    function selectOnlyOneLocationSub(selectedCheckbox) {
+        // 取得所有的 checkbox
+        const checkboxes = document.querySelectorAll('input[type="checkbox"][name="locationSub"]');
+
+        // 將所有 checkbox 的 checked 狀態設為 false
+        checkboxes.forEach(checkbox => {
+            if (checkbox !== selectedCheckbox) {
+                checkbox.checked = false;
+            }
+        });
+
+        const  timeSlotCheckbox = document.querySelector('input[name="timeSlot"][type="checkbox"]:checked');
+
+        if (selectedCheckbox.checked && timeSlotCheckbox) {
+            document.getElementById("price").textContent = "$" + selectedCheckbox.dataset.price
+            //解鎖btn
+            document.getElementById("confirmBtn").disabled = false
+        } else {
+            document.getElementById("price").textContent = "$0"
+            //鎖住btn
+            document.getElementById("confirmBtn").disabled = true
+        }
+
+
+
+    }
+
+    function renderLocationSubSelectionList(dataArray) {
+        let locationSubOptions = ``;
+        for (let i = 0; i < dataArray.length; i++) {
+            let LSID = dataArray[i]['LSID']
+            let LSIDName = dataArray[i]['LSIDName']
+            let price = dataArray[i]["Price"]
+            let payImmediatelyAfterBooking = dataArray[i]["PayImmediatelyAfterBooking"]
+            let charge = dataArray[i]['Charge']
+            let description = dataArray[i]['Description']
+            let minPrice = dataArray[i]["MinPrice"]
+            let imageUrls = dataArray[i]["ImageUrls"]
+            locationSubOptions +=
+                `<div class="row mb-3 mx-4 timeSlot" id="${LSID}">
+                            <div class="col-8" style="text-align:left; ">                        
+                                <label for="locationSub-${LSID}"><b><font color = "darkgray">|</font>&nbsp</b> ${LSIDName}</label>
+                            </div>
+                            <div class="col-4" style="text-align:right">
+                                <input class="form-check-input" type="checkbox" onclick="selectOnlyOneLocationSub(this)" name="locationSub" id="locationSub-${LSID}" value="${LSID}" data-price="${price}" data-payImmediatelyAfterBooking="${payImmediatelyAfterBooking}" 
+                                data-lsid="${LSID}" data-lsidname="${LSIDName}"  data-charge="${charge}" data-description="${description}"  data-minprice="${minPrice}" data-imageurls="${imageUrls}"  aria-label="...">
+                            </div>
+                        </div></div>`
+        }
+        document.getElementById('locationSubTable').innerHTML = locationSubOptions
+        document.getElementById("locationSubTable").style.display = "block";
+    }
+
+    function confirm() {
+                    const checkedCheckbox = document.querySelector('input[type="checkbox"]:checked');
+            document.querySelector('form#confirm_Form input[name="date"]').value = document.getElementById("selectDate").textContent;
+            document.querySelector('form#confirm_Form input[name="timeSlot"]').value = checkedCheckbox.value;
+            // dataset屬性會將所有data-屬性轉換為小寫。
+            document.querySelector('form#confirm_Form input[name="price"]').value = checkedCheckbox.dataset.price;
+            document.querySelector('form#confirm_Form input[name="payImmediatelyAfterBooking"]').value = checkedCheckbox.dataset.payimmediatelyafterbooking;
+            document.getElementById('confirm_Form').submit()
+               
+    }
+
+    function backFromConfirmPage(LID, LSID, date, timeSlot) {
+        if (date && timeSlot) {
+            // 清除先前选中日期的背景颜色
+            document.querySelectorAll('.fc-day').forEach(function(day) {
+                day.classList.remove('fc-day-clicked');
+            });
+
+            // 为点击的日期添加自定义的背景颜色
+            document.querySelector(`[data-date="${date}"]`).classList.add("fc-day-clicked");
+
+
+            document.getElementById("selectDate").textContent = date;
+
+
+
+            getResLocAvailInfo_Date(LID, LSID, date, timeSlot)
+        }
+    }
+
+    async function loadData(LID, LSID, date, timeSlot) {
+        await getResLocAvailInfo(LID, LSID)
+        backFromConfirmPage(LID, LSID, date, timeSlot)
+    }
+</script>
+
+</html>
