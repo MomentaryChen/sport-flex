@@ -112,6 +112,7 @@ class ChangjiaProvider(Provider):
 
     def availability(self, court: Court, query_date: str = "") -> Availability:
         """Ask for the same availability payload the reservation calendar loads."""
+        self.pace_api()
         data = self.page.evaluate(
             """async ({ lid, lsid, queryDate }) => {
                 const body = new URLSearchParams({
@@ -169,6 +170,7 @@ class ChangjiaProvider(Provider):
             category_id = self.category_ids.get(category)
         if not category_id:
             raise ProviderError(f"找不到 {category} 的分類代碼")
+        self.pace_api()
         result = self.page.evaluate(
             """async ({ categoryId, category, day, start, end }) => {
                 const body = new URLSearchParams({

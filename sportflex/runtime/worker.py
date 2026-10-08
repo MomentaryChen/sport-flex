@@ -34,6 +34,7 @@ CAPTCHA_RETRY_SEC = 60  # fetching the captcha failed: try again this soon
 PAY_REMIND_SEC = 5 * 60  # still unpaid this long after the order: remind once
 DEFAULT_PAY_TIMEOUT_SEC = 590  # the site's OnlinePaymentTimeoutSeconds, when the lookup failed
 RELOGIN_HINT = "驗證碼圖片會另外傳到 Telegram，直接回覆就能重新登入。"
+_BUSY_SNIPE_PHASES = frozenset({"firing", "preparing", "ready"})
 
 
 class AccountWorker:
@@ -117,6 +118,8 @@ class AccountWorker:
             with open_page(self.account) as page:
                 provider = create_provider(self.account.provider, page)
                 provider.order = self.account.order_options()
+                if self.venues:
+                    provider.api_pause_sec = max(venue.rules.api_pause_sec for venue in self.venues.values())
                 self.session = provider.refresh_session()
                 if not self.session["loggedIn"]:
                     self._event("logout_detected", "啟動時發現尚未登入", level="warn")
@@ -244,7 +247,7 @@ class AccountWorker:
             self._event("error", f"檢查登入失敗：{exc}", level="warn")
             return
         if self.session["loggedIn"]:
-            self._relogin_needed = False
+            self._clear_relogin_state()
         elif not self._relogin_needed:
             self._event("logout_detected", "定時檢查發現登入已失效", level="warn")
             self._alert("登入已失效", "定時檢查發現已被登出。" + (RELOGIN_HINT if self.bot else "請在網頁上重新登入。"))
@@ -257,10 +260,37 @@ class AccountWorker:
             self._logout_reason = reason
         self._relogin_needed = True
 
+    def _snipe_owns_browser(self) -> bool:
+        """Don't navigate to the login page mid-snipe; it would break prepare/fire on the booking page."""
+        for job in self.snipes.values():
+            if job.active and job.spec and job.spec.get("phase") in _BUSY_SNIPE_PHASES:
+                return True
+        return False
+
+    def _clear_relogin_state(self) -> None:
+        self._relogin_needed = False
+        self._restart_prompts()
+
+    def _sync_logged_in_state(self, provider: Provider) -> bool:
+        """The in-memory flag can lag (e.g. after a successful Telegram login or a transient NeedLogin)."""
+        try:
+            self.session = provider.refresh_session()
+        except Exception as exc:
+            self._event("error", f"檢查登入失敗：{exc}", level="warn")
+            return False
+        if self.session["loggedIn"]:
+            self._clear_relogin_state()
+            return True
+        return False
+
     def _maybe_prompt_relogin(self, provider: Provider) -> None:
         """Send a captcha over Telegram; the reply logs in (TelegramBot -> WorkerPool.login_with).
         After MAX_PROMPTS unanswered captchas, stop and say so until /login restarts it."""
         if not (self._relogin_needed and self.bot) or time.time() - self._prompted_at < REPROMPT_SEC:
+            return
+        if self._snipe_owns_browser():
+            return
+        if self._sync_logged_in_state(provider):
             return
         if self._prompts >= MAX_PROMPTS:
             if not self._gave_up:
@@ -299,13 +329,20 @@ class AccountWorker:
         self._prompts = 0
         self._gave_up = False
 
-    def _record_grab(self, result: dict) -> None:
+    def _publish_grab(self, result: dict, label: str, job: str) -> None:
         result["at"] = time.time()
         result["account"] = self.account.id
         self.last_grab = result
-        self._grab_event(result, "自動送出訂單" if result.get("order") else "自動送出到確認頁", "auto")
+        self._grab_event(result, label, job)
         self._track_payment(result)
         announce_grab(self.notifier, self.account.display, result)
+
+    def _record_grab(self, result: dict) -> None:
+        self._publish_grab(
+            result,
+            "自動送出訂單" if result.get("order") else "自動送出到確認頁",
+            "auto",
+        )
 
     def _alert(self, title: str, body: str) -> None:
         self._event("alert", title, level="warn", data={"body": body})
@@ -342,6 +379,14 @@ class AccountWorker:
                 self._restart_prompts()
                 self._prompts = 1
                 self._prompted_at = time.time()
+                if self.bot:
+                    self._event("relogin_prompt", "已透過 Telegram 傳送驗證碼（網頁顯示驗證碼）")
+                    self.bot.ask_code_async(
+                        self.account.id,
+                        image,
+                        f"[{self.account.id}] {self.account.display} {self._logout_reason}，請回覆這張圖上的驗證碼"
+                        f"（第 {self._prompts}/{MAX_PROMPTS} 次）",
+                    )
             return image
 
         return self.call(run)
@@ -352,8 +397,11 @@ class AccountWorker:
             self._restart_prompts()
             result = provider.login(code)
             if result.get("ok"):
+                # Trust the login API first; refresh_session can briefly lag right after submit.
+                self._clear_relogin_state()
                 self.session = provider.refresh_session()
-                self._relogin_needed = not self.session["loggedIn"]
+                if not self.session["loggedIn"]:
+                    self.session = provider.refresh_session()
                 self._event("login", "登入成功")
             else:
                 self._event("login_failed", f"登入失敗：{result.get('message', '')}", level="warn")
@@ -375,8 +423,11 @@ class AccountWorker:
         def run(provider: Provider) -> dict:
             court = provider.find_court(venue, category, court_id)
             result = grab(provider, venue, court, query_date, slot)
-            self._grab_event(result, "手動送出訂單" if result.get("order") else "手動送出到確認頁", "manual")
-            self._track_payment(result)
+            self._publish_grab(
+                result,
+                "手動送出訂單" if result.get("order") else "手動送出到確認頁",
+                "manual",
+            )
             return result
 
         return self.call(run, timeout=90)

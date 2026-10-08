@@ -24,10 +24,11 @@ class BookingRules(BaseModel):
     prepare_lead_sec: int = 60  # park on the reserve page this early
     login_check_lead_min: int = 10  # re-check the login this long before release, alert if it dropped
     login_recheck_min: int = 30  # while armed (before the lead window), re-check login this often
-    poll_sec: float = 1  # pause between availability checks while firing
-    throttle_backoff_sec: float = 8  # pause after the site says we are too fast
-    watch_interval_sec: int = 15
-    watch_min_interval_sec: int = 12
+    poll_sec: float = 2.5  # pause between snipe rounds (each round checks at most one court)
+    api_pause_sec: float = 2.5  # minimum gap between Changjia availability/search API calls
+    throttle_backoff_sec: float = 12  # pause after the site says we are too fast
+    watch_interval_sec: int = 45
+    watch_min_interval_sec: int = 30
 
     @field_validator("release_time")
     @classmethod

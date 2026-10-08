@@ -170,7 +170,7 @@ def test_relogin_stops_after_three_unanswered_prompts(monkeypatch):
     worker.captcha_image()
     for _ in range(4):
         due()
-    assert len(bot.photos) == 5  # /login's captcha counted as 1 of 3 (sent by the bot itself), then 2 more
+    assert len(bot.photos) == 6  # 3 unanswered, then web captcha (1) plus 2 more auto prompts
     assert len(bot.texts) == 2
 
 
@@ -218,3 +218,57 @@ def test_snipe_reports_logout_to_worker(venue):  # noqa: F811
     job.arm("羽球", [{"courtId": "A", "name": "A", "time": "19:00"}])
     job.tick(FakeProvider(logged_in=False), opens(job) - timedelta(seconds=30))
     assert logouts
+
+
+class SessionProvider:
+    def __init__(self, logged_in: bool) -> None:
+        self.logged_in = logged_in
+        self.captcha_calls = 0
+
+    def refresh_session(self):
+        return {"loggedIn": self.logged_in, "banner": ""}
+
+    def captcha(self, username, password):
+        self.captcha_calls += 1
+        return b"jpeg"
+
+
+def test_relogin_prompt_skips_when_session_already_logged_in(monkeypatch):
+    worker, bot = make_worker(monkeypatch)
+    worker._logged_out()
+    provider = SessionProvider(logged_in=True)
+    worker._maybe_prompt_relogin(provider)
+    assert not bot.photos and not worker._relogin_needed
+
+
+def test_login_success_clears_relogin_even_if_refresh_lags(monkeypatch):
+    worker, bot = make_worker(monkeypatch)
+    worker._logged_out()
+
+    class LaggingLogin:
+        def __init__(self):
+            self.refresh_calls = 0
+
+        def login(self, code):
+            return {"ok": True, "message": "登入成功"}
+
+        def refresh_session(self):
+            self.refresh_calls += 1
+            return {"loggedIn": self.refresh_calls >= 2, "banner": ""}
+
+    provider = LaggingLogin()
+    worker.call = lambda fn, timeout=120: fn(provider)
+    result = worker.login("1234")
+    assert result["ok"] and not worker._relogin_needed
+
+
+def test_relogin_prompt_waits_while_snipe_firing(monkeypatch, venue):  # noqa: F811
+    worker, bot = make_worker(monkeypatch)
+    worker._logged_out()
+    job = SnipeJob(venue, "me", lambda result: None)
+    job.arm("羽球", [{"courtId": "A", "name": "A", "time": "19:00"}])
+    job.spec["phase"] = "firing"
+    worker.snipes[venue.id] = job
+    provider = SessionProvider(logged_in=False)
+    worker._maybe_prompt_relogin(provider)
+    assert not bot.photos and provider.captcha_calls == 0

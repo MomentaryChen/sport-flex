@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 from playwright.sync_api import Page
 
 from sportflex.core.models import Availability, Court, OrderOptions, Slot, slot_matches
@@ -33,6 +35,18 @@ class Provider:
     def __init__(self, page: Page) -> None:
         self.page = page
         self.order = OrderOptions()  # set per account by the worker / CLI
+        self.api_pause_sec = 0.0  # worker sets from venue rules; 0 = no extra pacing
+        self._last_api_at = 0.0
+
+    def pace_api(self) -> None:
+        """Wait so back-to-back availability/search calls stay under the venue rate limit."""
+        pause = self.api_pause_sec
+        if pause <= 0:
+            return
+        wait = pause - (time.time() - self._last_api_at)
+        if wait > 0:
+            time.sleep(wait)
+        self._last_api_at = time.time()
 
     def refresh_session(self) -> dict:
         """Reload the home page and report {"loggedIn": bool, "banner": str}."""
