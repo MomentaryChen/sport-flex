@@ -1,3 +1,4 @@
+import time
 from datetime import timedelta
 
 from sportflex.core.engine import SnipeJob
@@ -171,6 +172,44 @@ def test_relogin_stops_after_three_unanswered_prompts(monkeypatch):
         due()
     assert len(bot.photos) == 5  # /login's captcha counted as 1 of 3 (sent by the bot itself), then 2 more
     assert len(bot.texts) == 2
+
+
+def make_worker(monkeypatch):
+    from sportflex.core.accounts import Account
+    from sportflex.core.notify import ConsoleNotifier
+    from sportflex.runtime.worker import AccountWorker
+
+    monkeypatch.setenv("T_USER", "u")
+    monkeypatch.setenv("T_PASS", "p")
+    account = Account(id="me", provider="changjia", username_env="T_USER", password_env="T_PASS", profile="x")
+    bot = RecordingBot()
+    return AccountWorker(account, {}, ConsoleNotifier(), bot=bot), bot
+
+
+def test_startup_logout_prompts_with_reason(monkeypatch):
+    worker, bot = make_worker(monkeypatch)
+    worker._logged_out("服務啟動時發現尚未登入")
+    worker._logged_out()  # a job noticing the same logout keeps the first reason
+    worker._maybe_prompt_relogin(CaptchaProvider())
+    assert bot.photos == ["[me] me 服務啟動時發現尚未登入，請回覆這張圖上的驗證碼（第 1/3 次）"]
+
+
+def test_failed_captcha_does_not_use_a_try(monkeypatch):
+    from sportflex.runtime import worker as worker_module
+
+    class Broken:
+        def captcha(self, username, password):
+            raise RuntimeError("network down")
+
+    worker, bot = make_worker(monkeypatch)
+    worker._logged_out()
+    worker._maybe_prompt_relogin(Broken())
+    assert worker._prompts == 0 and not bot.photos
+    wait = worker._prompted_at + worker_module.REPROMPT_SEC - time.time()
+    assert 0 < wait <= worker_module.CAPTCHA_RETRY_SEC  # retried in about a minute, not ten
+    worker._prompted_at -= worker_module.CAPTCHA_RETRY_SEC
+    worker._maybe_prompt_relogin(CaptchaProvider())
+    assert bot.photos and bot.photos[0].endswith("（第 1/3 次）")
 
 
 def test_snipe_reports_logout_to_worker(venue):  # noqa: F811
