@@ -674,7 +674,7 @@
       }));
       const lines = named.map((row) => `・${row.name} ${row.time}`).join("\n");
       const who = $("accountSelect").selectedOptions[0]?.textContent || state.account;
-      if (!confirm(`用「${who}」搶 ${state.venue.name}\n${state.release.targetLabel} ${state.category}\n${lines}\n\n${state.release.opensLabel} 看到空檔就送出，付款仍要你自己完成。`)) return;
+      if (!confirm(`用「${who}」搶 ${state.venue.name}\n${state.release.targetLabel} ${state.category}\n${lines}\n\n${state.release.opensLabel} 看到空檔就送出訂單（訂單成立），付款仍要你自己完成。`)) return;
       try {
         showSnipe(await api("/api/snipe", json(target({ enabled: true, category: state.category, targets: named }))));
         toast("已設定搶訂，請保持程式開著");
@@ -861,7 +861,7 @@
     // ---- grab / result -----------------------------------------------
 
     async function grab(court, slot) {
-      if (!confirm(`搶 ${court.name}\n${state.date}  ${slot.time}\n$${slot.price}`)) return;
+      if (!confirm(`搶 ${court.name}\n${state.date}  ${slot.time}\n$${slot.price}\n\n會直接送出訂單（訂單成立），付款由你自己完成。`)) return;
       busy("搶位中…");
       try {
         showResult(await api("/api/grab", json(target({ category: state.category, courtId: court.id, date: state.date, slot }))));
@@ -874,10 +874,23 @@
 
     function showResult(result) {
       $("resultTitle").textContent = [result.court, result.date, result.time].filter(Boolean).join(" · ") || "網站畫面";
-      $("resultText").textContent = (result.pressed
-        ? `已按「${result.pressed}」。如果下一步是付款，請自己按下面的按鈕，不會自動刷卡。`
-        : "已打開確認頁，付款按鈕不會自動按。") + (result.url ? `\n${result.url}` : "");
+      const order = result.order;
+      $("resultText").textContent = order
+        ? [
+            `訂單已成立${order.no ? "：" + order.no : ""}`,
+            `請${order.timeoutSec ? ` ${Math.floor(order.timeoutSec / 60)} 分鐘內` : "立即"}付款，逾時會被取消：開「會員中心」→ 點「待付款」→ 前往付款。`,
+            order.carrier ? `發票請選「手機載具」，填 ${order.carrier}` : "",
+            order.warning ? `注意：${order.warning}` : "",
+          ].filter(Boolean).join("\n")
+        : "停在訂單確認頁，還沒送出訂單；付款不會自動按。" + (result.url ? `\n${result.url}` : "");
       $("resultImage").src = "data:image/jpeg;base64," + result.image;
+      if (order && order.paymentUrl) {
+        $("resultButtons").replaceChildren(el("a", {
+          class: "btn btn-primary", href: order.paymentUrl, target: "_blank", rel: "noopener", text: "開啟會員中心（待付款）",
+        }));
+        $("modal").classList.remove("hidden");
+        return;
+      }
       $("resultButtons").replaceChildren(...(result.buttons || [])
         .filter((label) => !["×", "OK", "No", "Cancel"].includes(label))
         .map((label) => {

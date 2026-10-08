@@ -225,6 +225,7 @@ def _book(args) -> int:
     venue, account, category = _target(args)
     with open_page(account, headless=False) as page:
         provider = create_provider(venue.provider, page)
+        provider.order = account.order_options()
         courts = _filtered(provider.list_courts(venue, category), args.name)
         if len(courts) != 1:
             names = "、".join(court.name for court in courts) or "（無）"
@@ -241,9 +242,18 @@ def _book(args) -> int:
             raise RuntimeError(f"{slot.time} 目前不可預約（{slot.status}）")
         result = grab(provider, venue, court, args.date, slot)
         print(f"已送出 {venue.name} {court.name}  {args.date}  {slot.time}  ${slot.price}")
-        if result["pressed"]:
-            print(f"已按「{result['pressed']}」")
-        print(f"目前頁面：{result['url']}")
-        print("不會代按付款。請在瀏覽器核對並自行付款，完成後按 Enter 關閉。")
+        order = result.get("order")
+        if order:
+            print(f"訂單已成立 {order.get('no') or ''}")
+            minutes = f" {order['timeoutSec'] // 60} 分鐘內" if order.get("timeoutSec") else "立即"
+            print(f"請{minutes}付款，逾時會被取消：{order.get('paymentUrl') or '會員中心'} → 點「待付款」→ 前往付款")
+            if order.get("carrier"):
+                print(f"發票請選「手機載具」，填 {order['carrier']}")
+            if order.get("warning"):
+                print(f"注意：{order['warning']}")
+            print("程式不會付款。付款完成後按 Enter 關閉。")
+        else:
+            print(f"目前頁面：{result['url']}")
+            print("停在訂單確認頁，沒有送出訂單。請在瀏覽器核對並自行送出、付款，完成後按 Enter 關閉。")
         input()
     return 0

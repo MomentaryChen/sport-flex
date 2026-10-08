@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import os
+import re
 from functools import lru_cache
 from pathlib import Path
 
 import yaml
 from pydantic import BaseModel, ConfigDict
 
+from sportflex.core.models import OrderOptions
 from sportflex.paths import CONFIG_DIR, ENV_FILE, PROFILES_DIR, ROOT
 
 ACCOUNTS_FILE = CONFIG_DIR / "accounts.yaml"
+CARRIER_PATTERN = re.compile(r"/[0-9A-Z.+\-]{7}")
 
 
 class Account(BaseModel):
@@ -23,6 +26,7 @@ class Account(BaseModel):
     username_env: str
     password_env: str
     profile: str = ""  # browser profile dir, relative to the project root
+    invoice_carrier_env: str = ""  # .env key of the e-invoice mobile barcode (手機條碼載具)
 
     @property
     def profile_dir(self) -> Path:
@@ -39,6 +43,14 @@ class Account(BaseModel):
         if not username or not password:
             raise RuntimeError(f".env 需要 {self.username_env} 和 {self.password_env}")
         return username, password
+
+    def order_options(self) -> OrderOptions:
+        """SPORT_FLEX_SUBMIT_ORDER=0 goes back to stopping on the order page without placing it."""
+        env = load_env()
+        carrier = env.get(self.invoice_carrier_env, "").strip().upper() if self.invoice_carrier_env else ""
+        if carrier and not CARRIER_PATTERN.fullmatch(carrier):
+            raise ValueError(f"{self.invoice_carrier_env} 不是手機條碼載具格式（/ 加 7 碼英數，例如 /ABC1234）")
+        return OrderOptions(submit_order=env.get("SPORT_FLEX_SUBMIT_ORDER", "1") != "0", invoice_carrier=carrier)
 
     def public(self) -> dict:
         username = load_env().get(self.username_env, "")

@@ -107,16 +107,31 @@ def public_snapshot(snapshot: dict) -> dict:
         "text": snapshot["text"],
         "buttons": snapshot["buttons"],
         "pressed": snapshot.get("pressed") or "",
+        "order": snapshot.get("order"),  # set when the order was placed: no, paymentUrl, carrier, timeoutSec, warning
         "image": base64.b64encode(snapshot["image"]).decode("ascii"),
     }
 
 
 def announce_grab(notifier: Notifier, account_label: str, result: dict) -> None:
-    notifier.send(
-        f"搶到 {result['venueName']} {result['court']}",
-        f"{result['date']} {result['time']} ${result['price']}\n"
-        f"帳號：{account_label}\n已停在確認頁，請盡快自己完成付款。\n{result['url']}",
-    )
+    order = result.get("order")
+    head = f"{result['date']} {result['time']} ${result['price']}\n帳號：{account_label}\n"
+    if not order:
+        notifier.send(
+            f"搶到 {result['venueName']} {result['court']}",
+            head + f"已停在訂單確認頁，請盡快自己送出並付款。\n{result['url']}",
+        )
+        return
+    lines = [f"訂單已成立{('：' + order['no']) if order.get('no') else ''}"]
+    deadline = f"（{order['timeoutSec'] // 60} 分鐘內，逾時會被取消）" if order.get("timeoutSec") else "，否則可能被取消"
+    if order.get("paymentUrl"):
+        lines.append(f"請立即付款{deadline}：打開連結 → 點「待付款」→ 前往付款\n{order['paymentUrl']}")
+    else:
+        lines.append(f"請立即到長佳網站「會員中心 → 待付款」付款{deadline}。")
+    if order.get("carrier"):
+        lines.append(f"發票請選「手機載具」，填 {order['carrier']}")
+    if order.get("warning"):
+        lines.append(f"注意：{order['warning']}")
+    notifier.send(f"✅ 搶到 {result['venueName']} {result['court']}", head + "\n".join(lines))
 
 
 class SnipeJob:

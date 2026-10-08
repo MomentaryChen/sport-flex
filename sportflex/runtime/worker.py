@@ -29,6 +29,8 @@ LOGIN_HOLD_SEC = 5 * 60  # how long the page waits on the login form for a captc
 REPROMPT_SEC = 10 * 60  # still logged out and no reply: send a fresh captcha this often
 MAX_PROMPTS = 3  # unanswered captchas before going quiet until /login
 CAPTCHA_RETRY_SEC = 60  # fetching the captcha failed: try again this soon
+PAY_REMIND_SEC = 5 * 60  # still unpaid this long after the order: remind once
+DEFAULT_PAY_TIMEOUT_SEC = 590  # the site's OnlinePaymentTimeoutSeconds, when the lookup failed
 RELOGIN_HINT = "驗證碼圖片會另外傳到 Telegram，直接回覆就能重新登入。"
 
 
@@ -61,6 +63,7 @@ class AccountWorker:
         self._relogin_needed = False
         self._hold_until = 0.0  # a captcha is waiting for its code: keep the page on the login form
         self._prompted_at = 0.0
+        self._payments: list[dict] = []  # placed orders we're watching until they're paid or expire
         self._logout_reason = "登入已失效"
         self._prompts = 0  # captchas sent this round without a reply
         self._gave_up = False
@@ -111,6 +114,7 @@ class AccountWorker:
         try:
             with open_page(self.account) as page:
                 provider = create_provider(self.account.provider, page)
+                provider.order = self.account.order_options()
                 self.session = provider.refresh_session()
                 if not self.session["loggedIn"]:
                     self._event("logout_detected", "啟動時發現尚未登入", level="warn")
@@ -146,7 +150,73 @@ class AccountWorker:
                 except Exception as exc:
                     self.watch.log.note(f"盯場出錯：{exc}")
             self._keepalive(provider)
+        self._check_payments(provider)
         self._maybe_prompt_relogin(provider)
+
+    # ---- unpaid orders ---------------------------------------------------
+
+    def _track_payment(self, result: dict) -> None:
+        order = result.get("order") or {}
+        if not (order.get("luid") and order.get("lid")):
+            return
+        placed = time.time()
+        self._payments.append(
+            {
+                **{key: order.get(key) or "" for key in ("luid", "lid", "no", "paymentUrl", "carrier")},
+                "label": f"{result.get('court', '')} {result.get('date', '')} {result.get('time', '')}".strip(),
+                "placed": placed,
+                "timeout": order.get("timeoutSec") or DEFAULT_PAY_TIMEOUT_SEC,
+                "stage": "remind",
+                "next": placed + PAY_REMIND_SEC,
+                "misses": 0,
+            }
+        )
+
+    def _check_payments(self, provider: Provider) -> None:
+        """PAY_REMIND_SEC after an order: still on the unpaid list -> remind once. After the site's
+        deadline: report that it is off the list (paid, or cancelled for not paying)."""
+        now = time.time()
+        for item in list(self._payments):
+            if now < item["next"]:
+                continue
+            try:
+                pending = provider.pending_payments(item["lid"])
+            except Exception as exc:
+                self._event("error", f"查詢付款狀態失敗：{exc}", level="warn")
+                pending = None
+            if pending is None:  # can't tell right now; try again shortly, then give up
+                item["misses"] += 1
+                item["next"] = now + 60
+                if item["misses"] >= 10:
+                    self._payments.remove(item)
+                continue
+            unpaid = item["luid"] in pending
+            if item["stage"] == "remind":
+                if not unpaid:
+                    self._event("payment_done", f"訂單 {item['no']} 已不在待付款清單（已付款）")
+                    self._payments.remove(item)
+                    continue
+                left = max(0, int(item["timeout"] - (now - item["placed"])) // 60)
+                carrier = f"\n發票請選「手機載具」，填 {item['carrier']}" if item["carrier"] else ""
+                self._event("payment_reminder", f"訂單 {item['no']} 還沒付款，剩約 {left} 分鐘", level="warn")
+                self._alert(
+                    f"⏰ 還沒付款：{item['label']}",
+                    f"訂單 {item['no']} 還沒付款，約 {left} 分鐘後會被取消。\n"
+                    f"打開連結 → 點「待付款」→ 前往付款\n{item['paymentUrl']}{carrier}",
+                )
+                item.update(stage="final", next=item["placed"] + item["timeout"] + 60)
+            elif unpaid:  # the site hasn't cleared it yet
+                if now > item["placed"] + item["timeout"] + 5 * 60:
+                    self._payments.remove(item)
+                else:
+                    item["next"] = now + 60
+            else:
+                self._event("payment_closed", f"訂單 {item['no']} 已不在待付款清單")
+                self._alert(
+                    f"訂單 {item['no']} 已結束",
+                    f"{item['label']} 已不在待付款清單：有付款就已完成；沒付款的話已因逾時被取消。",
+                )
+                self._payments.remove(item)
 
     # ---- staying logged in -----------------------------------------------
 
@@ -220,7 +290,8 @@ class AccountWorker:
         result["at"] = time.time()
         result["account"] = self.account.id
         self.last_grab = result
-        self._grab_event(result, "自動送出到確認頁", "auto")
+        self._grab_event(result, "自動送出訂單" if result.get("order") else "自動送出到確認頁", "auto")
+        self._track_payment(result)
         announce_grab(self.notifier, self.account.display, result)
 
     def _alert(self, title: str, body: str) -> None:
@@ -236,7 +307,7 @@ class AccountWorker:
             f"{label} {result['court']} {result['date']} {result['time']}",
             venue=result.get("venue", ""),
             job=job,
-            data={key: result.get(key) for key in ("court", "date", "time", "price", "url", "pressed")},
+            data={key: result.get(key) for key in ("court", "date", "time", "price", "url", "pressed", "order")},
         )
 
     # ---- session -------------------------------------------------------
@@ -291,7 +362,8 @@ class AccountWorker:
         def run(provider: Provider) -> dict:
             court = provider.find_court(venue, category, court_id)
             result = grab(provider, venue, court, query_date, slot)
-            self._grab_event(result, "手動送出到確認頁", "manual")
+            self._grab_event(result, "手動送出訂單" if result.get("order") else "手動送出到確認頁", "manual")
+            self._track_payment(result)
             return result
 
         return self.call(run, timeout=90)
