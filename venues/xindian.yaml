@@ -17,8 +17,11 @@ rules:
   distinct_courts: true  # 且須為不同場地
   snipe_deadline_min: 3
   prepare_lead_sec: 60
-  poll_sec: 1
-  throttle_backoff_sec: 8   # 網站回「請勿操作頻繁」時暫停
+  poll_sec: 2.5
+  api_pause_sec: 2.5        # 長佳 API 連打會回「請勿操作頻繁」
+  throttle_backoff_sec: 12
+  watch_interval_sec: 45
+  watch_min_interval_sec: 30
 
 prices:                  # 羽球，元/面/小時
   peak: { price: 490, when: "週一至五 18–22；週六日 12–22" }

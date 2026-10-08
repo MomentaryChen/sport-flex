@@ -69,9 +69,10 @@ def build_board(provider: Provider, venue: Venue, category: str, query_date: str
     courts = provider.list_courts(venue, category)
     groups = []
     window = {"start": "", "end": "", "date": query_date}
+    pause = venue.rules.api_pause_sec
     for index, court in enumerate(courts):
-        if index:
-            time.sleep(0.35)
+        if index and pause > 0:
+            time.sleep(pause)
         availability = provider.availability(court, query_date)
         window = {
             "start": availability.window_start,
@@ -338,19 +339,22 @@ class SnipeJob:
             except Exception as exc:
                 self.log.note(f"{item['name']} 查詢失敗：{exc}", "error", "error", sec=self._sec())
                 continue
-            for court in candidates:
-                outcome = self._attempt(provider, spec, item, court)
-                if outcome == "throttled":
-                    self._throttled()
-                    return
-                if outcome == "unreleased":
-                    self.log.quiet(f"{spec['targetDate']} 還沒釋出")
-                    self._next_at = time.time() + self.rules.poll_sec
-                    return
-                if outcome == "booked":
-                    booked_any = True
-                if outcome in {"booked", "skipped"}:
-                    break
+            if not candidates:
+                continue
+            scan = int(item.get("_scan_idx") or 0)
+            court = candidates[scan % len(candidates)]
+            outcome = self._attempt(provider, spec, item, court)
+            if outcome == "throttled":
+                self._throttled()
+                return
+            if outcome == "unreleased":
+                self.log.quiet(f"{spec['targetDate']} 還沒釋出")
+                self._next_at = time.time() + self.rules.poll_sec
+                return
+            if outcome == "booked":
+                booked_any = True
+            elif outcome == "miss" and len(candidates) > 1:
+                item["_scan_idx"] = (scan + 1) % len(candidates)
         if all(item.get("status") in {"booked", "skipped"} for item in spec["targets"]):
             self._finish("目標都處理完了")
             return
