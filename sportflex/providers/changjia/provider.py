@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import time
 
 from playwright.sync_api import Page
@@ -9,6 +10,9 @@ from sportflex.core.venue import Venue
 from sportflex.providers.base import NeedLogin, Provider, ProviderError, Throttled
 
 BASE = "https://changjia.sporetrofit.com"
+# 會員中心: its 待付款 button lists unpaid orders. consumeRecord.php itself can't be linked to that
+# tab (it ignores URL parameters and reopens whichever tab was used last).
+UNPAID_URL = BASE + "/My/"
 
 
 class ChangjiaProvider(Provider):
@@ -204,7 +208,9 @@ class ChangjiaProvider(Provider):
         self._open_reserve(court)
 
     def submit(self, court: Court, query_date: str, slot: Slot) -> dict:
-        """Open 開始預約 and submit the site's confirm form. Stops before a payment button."""
+        """開始預約 → 訂單確認 (confirm.php) → 送出訂單, then stop on 付款 (pay.php) without pressing
+        確認付款: the person pays from 會員中心 → 待付款 on their phone. Never pays.
+        With order.submit_order off it stops on 訂單確認 as before."""
         page = self.page
         if not self._already_on_reserve(court.id):
             self._open_reserve(court)
@@ -217,16 +223,89 @@ class ChangjiaProvider(Provider):
         form.evaluate("node => node.submit()")
         self.on_list = False
         page.wait_for_load_state("domcontentloaded")
-        page.wait_for_timeout(700)
-        snapshot = self._snapshot()
-        label = _booking_confirm_label(snapshot["buttons"])
-        if label:
-            self._press_label(label)
-            page.wait_for_load_state("domcontentloaded")
-            page.wait_for_timeout(700)
+        agreement = page.locator('input[name="agreement"]')
+        try:
+            agreement.wait_for(state="visible", timeout=15_000)
+        except Exception:
+            agreement = None
+        if not self.order.submit_order or agreement is None:
             snapshot = self._snapshot()
-        snapshot["pressed"] = label
+            snapshot["pressed"] = ""
+            return snapshot
+        self._place_order(agreement)  # raises if the site refused: nothing was booked
+        if "pay.php" not in page.url:  # venue without online payment: the booking is already complete
+            snapshot = self._snapshot()
+            snapshot.update(pressed="送出訂單", order={"no": "", "paymentUrl": "", "carrier": "", "warning": ""})
+            return snapshot
+        # The order exists from here on: report problems in the result, never raise.
+        order = {
+            "no": _order_no(page),
+            "luid": _hidden(page, "LUID"),  # how pending_payments() names this order
+            "lid": court.raw.get("lid") or "",
+            # Paying on the phone asks for the invoice again, so the carrier is shown, not pre-filled here.
+            "paymentUrl": UNPAID_URL,
+            "carrier": self.order.invoice_carrier,
+            "timeoutSec": None,
+            "warning": "",
+        }
+        try:
+            order["timeoutSec"] = self._payment_timeout(order["lid"])
+        except Exception as exc:
+            order["warning"] = f"查不到付款期限：{exc}"
+        snapshot = self._snapshot()
+        snapshot.update(pressed="送出訂單", order=order)
         return snapshot
+
+    def _place_order(self, agreement) -> None:
+        """Tick 我已同意 and press 送出訂單 like a person; the site enables the button 2.5 s after the tick."""
+        page = self.page
+        if not agreement.is_checked():
+            agreement.click()
+        page.wait_for_function(
+            "() => { const b = [...document.querySelectorAll('button')].find(x => x.innerText.trim() === '送出訂單');"
+            " return b && !b.disabled; }",
+            timeout=15_000,
+        )
+        page.locator("button", has_text="送出訂單").click()
+        deadline = time.time() + 45
+        while time.time() < deadline:
+            if "pay.php" in page.url:
+                page.wait_for_load_state("domcontentloaded")
+                return
+            message = _dialog_message(page)
+            if message is not None:
+                if "預約已完成" in message:
+                    return
+                raise ProviderError(f"送出訂單失敗：{message or '網站沒有說明原因'}")
+            page.wait_for_timeout(250)
+        raise ProviderError("送出訂單後網站沒有回應")
+
+    def _payment_timeout(self, venue_code: str) -> int | None:
+        """Seconds the site keeps an unpaid order (about 590), from the read-only lookup pay.php uses."""
+        result = self._api({"serviceName": "getOnlinePaymentPath", "LID": venue_code})
+        seconds = str(result.get("OnlinePaymentTimeoutSeconds") or "")
+        return int(seconds) if seconds.isdigit() else None
+
+    def _api(self, params: dict) -> dict:
+        """POST the site's /api/getRequestData.php from the page (same origin, same session)."""
+        data = self.page.evaluate(
+            """async (params) => {
+                const r = await fetch('/api/getRequestData.php', {method: 'POST',
+                    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                    body: new URLSearchParams(params)});
+                return await r.json();
+            }""",
+            params,
+        )
+        if str(data.get("Status")) != "1":
+            raise ProviderError((data.get("ResultData") or {}).get("ResultMsg") or f"{params['serviceName']} 失敗")
+        return data.get("ResultData") or {}
+
+    def pending_payments(self, venue_code: str) -> list[str] | None:
+        """Orders awaiting online payment, from the same read-only call pay.php makes."""
+        if not self.page.url.startswith(BASE):
+            return None  # the fetch needs the site's origin; the caller retries later
+        return _pending_luids(self._api({"serviceName": "getOnlinePaymentOrderDetails", "LID": venue_code}))
 
     def press(self, label: str) -> dict:
         self._press_label(label)
@@ -368,13 +447,33 @@ def _set_input(form, name: str, value: str) -> None:
     form.locator(f'input[name="{name}"]').evaluate("(el, next) => { el.value = next }", value)
 
 
-def _booking_confirm_label(buttons: list[str]) -> str:
-    """The 確認預約 button, never anything that pays."""
-    blocked = ("付款", "支付", "信用卡", "取消", "返回", "上一步", "登入")
-    wanted = ("確認預約", "確定預約", "送出預約", "確認送出", "完成預約", "我要預約")
-    for label in buttons:
-        if any(word in label for word in blocked):
-            continue
-        if any(word in label for word in wanted):
-            return label
-    return ""
+def _dialog_message(page) -> str | None:
+    """Text of a SweetAlert result dialog, or None while there is none (the loading spinner doesn't count)."""
+    popup = page.locator(".swal2-popup")
+    if not popup.count() or not popup.first.is_visible():
+        return None
+    if popup.first.locator("img[src*='loading']").count():
+        return None
+    return popup.first.inner_text().strip().replace("確定", "").replace("OK", "").strip()
+
+
+def _order_no(page) -> str:
+    """CarNo from 確認付款's onclick, e.g. pay('CJC2026100845514621', '290')."""
+    onclick = page.locator("button", has_text="確認付款").get_attribute("onclick") or ""
+    match = re.search(r"pay\('([^']+)'", onclick)
+    return match.group(1) if match else ""
+
+
+def _hidden(page, name: str) -> str:
+    field = page.locator(f'input[name="{name}"]')
+    return (field.first.input_value() if field.count() else "").upper()
+
+
+def _pending_luids(result: dict) -> list[str]:
+    """OnlinePaymentOrderDetails.DataTable.DataRow is one dict, a list, or empty."""
+    details = result.get("OnlinePaymentOrderDetails") or {}
+    table = details.get("DataTable") if isinstance(details, dict) else None
+    rows = (table or {}).get("DataRow") if isinstance(table, dict) else None
+    if isinstance(rows, dict):
+        rows = [rows]
+    return [str(row.get("LUID", "")).upper() for row in rows or [] if isinstance(row, dict)]

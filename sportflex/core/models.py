@@ -25,6 +25,15 @@ class Slot:
 
 
 @dataclass
+class OrderOptions:
+    """How far submit goes. submit_order=False stops on the order page as before; True places the
+    order, fills the invoice carrier and stops before the card page (the person pays from a link)."""
+
+    submit_order: bool = False
+    invoice_carrier: str = ""  # Taiwan e-invoice mobile barcode, e.g. "/ABC1234"
+
+
+@dataclass
 class Availability:
     query_date: str
     window_start: str

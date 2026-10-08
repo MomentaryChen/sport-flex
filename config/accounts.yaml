@@ -6,6 +6,7 @@
 #     label: 家人
 #     username_env: SPORT_FLEX_FAMILY_ACCOUNT
 #     password_env: SPORT_FLEX_FAMILY_PASSWORD
+#     invoice_carrier_env: SPORT_FLEX_FAMILY_INVOICE_CARRIER
 #     # profile 省略時用 .profiles/<id>
 accounts:
   - id: default
@@ -13,4 +14,5 @@ accounts:
     label: 我
     username_env: SPORT_FLEX_DEFAULT_ACCOUNT
     password_env: SPORT_FLEX_DEFAULT_PASSWORD
+    invoice_carrier_env: SPORT_FLEX_DEFAULT_INVOICE_CARRIER   # 手機條碼載具；省略就開個人發票
     profile: .browser-profile   # 沿用原本已登入的 profile；之後可搬到 .profiles/default

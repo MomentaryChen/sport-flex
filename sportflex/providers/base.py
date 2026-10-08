@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from playwright.sync_api import Page
 
-from sportflex.core.models import Availability, Court, Slot, slot_matches
+from sportflex.core.models import Availability, Court, OrderOptions, Slot, slot_matches
 from sportflex.core.venue import Venue
 
 
@@ -22,7 +22,9 @@ class Provider:
     """What the engine needs from a booking platform. One instance drives one logged-in browser page.
 
     Snapshots returned by submit/press are dicts with url, text, buttons, image (JPEG bytes) and pressed.
-    submit must stop before any payment step: the person pays by hand.
+    submit never pays: with order.submit_order it may place the order and fetch a payment link, but
+    the card page is never opened; the person pays by hand. submit returns an "order" dict when an
+    order was placed, and once it is placed submit must not raise (the engine would book again).
     """
 
     name: str
@@ -30,6 +32,7 @@ class Provider:
 
     def __init__(self, page: Page) -> None:
         self.page = page
+        self.order = OrderOptions()  # set per account by the worker / CLI
 
     def refresh_session(self) -> dict:
         """Reload the home page and report {"loggedIn": bool, "banner": str}."""
@@ -59,6 +62,11 @@ class Provider:
     def press(self, label: str) -> dict:
         """Press a button the person picked from the last snapshot."""
         raise NotImplementedError
+
+    def pending_payments(self, venue_code: str) -> list[str] | None:
+        """Ids (order["luid"]) of this account's orders still waiting for online payment, or None
+        when the platform can't tell. Must not navigate away from the current page."""
+        return None
 
     def search(self, venue: Venue, category: str, query_date: str, start: str, end: str) -> list[str]:
         """Ids of courts with a bookable slot starting in [start, end) on query_date.
