@@ -30,6 +30,13 @@ class WorkerPool:
             if worker.startup_error:
                 print(f"帳號 {worker.account.display} 啟動失敗：{worker.startup_error}", flush=True)
 
+    def stop(self) -> None:
+        threads = [threading.Thread(target=worker.stop) for worker in self.workers.values()]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
     def resolve(self, venue_id: str | None, account_id: str | None) -> tuple[Venue, AccountWorker]:
         venue = get_venue(venue_id)
         account = pick_account(venue.provider, account_id)

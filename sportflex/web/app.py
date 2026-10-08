@@ -20,6 +20,7 @@ from sportflex.providers.base import ProviderError
 from sportflex.runtime.pool import WorkerPool
 
 INDEX = Path(__file__).resolve().parent / "static" / "index.html"
+SHUTDOWN = threading.Event()
 
 
 @asynccontextmanager
@@ -28,6 +29,8 @@ async def lifespan(app: FastAPI):
     await asyncio.to_thread(pool.start)
     app.state.pool = pool
     yield
+    print("關閉瀏覽器中…", flush=True)
+    await asyncio.to_thread(pool.stop)
 
 
 app = FastAPI(title="sport-flex", lifespan=lifespan)
@@ -211,7 +214,8 @@ async def events(request: Request, venue: str | None = None, account: str | None
 
     async def stream():
         last = ""
-        while not await request.is_disconnected():
+        # An open tab never disconnects on its own; stop when the server shuts down (Ctrl+C).
+        while not SHUTDOWN.is_set() and not await request.is_disconnected():
             payload = {
                 "snipe": worker.snipes[found.id].state(),
                 "watch": worker.watch_state(),
@@ -234,7 +238,14 @@ def serve(port: int = 8765, open_browser: bool = True) -> None:
     print(f"啟動瀏覽器中… 完成後打開 {url}（API 文件：{url}docs）", flush=True)
     if open_browser:
         threading.Thread(target=_open_when_up, args=(port, url), daemon=True).start()
-    uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
+
+    class Server(uvicorn.Server):
+        def handle_exit(self, sig, frame) -> None:
+            SHUTDOWN.set()  # Ctrl+C: let open event streams end instead of waiting on them
+            super().handle_exit(sig, frame)
+
+    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning", timeout_graceful_shutdown=3)
+    Server(config).run()
 
 
 def _open_when_up(port: int, url: str) -> None:

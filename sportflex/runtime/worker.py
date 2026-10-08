@@ -40,6 +40,7 @@ class AccountWorker:
         self.ready = threading.Event()
         self.startup_error = ""
         self._queue: queue.Queue = queue.Queue()
+        self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name=f"sportflex-{account.id}", daemon=True)
 
     # ---- thread plumbing ----------------------------------------------
@@ -50,10 +51,18 @@ class AccountWorker:
         if not self.ready.is_set():
             self.startup_error = "瀏覽器啟動逾時"
 
+    def stop(self, wait: float = 15) -> None:
+        """Finish the current page action, then close Chrome so the profile is released cleanly."""
+        self._stop.set()
+        if self._thread.is_alive():
+            self._thread.join(wait)
+
     def call(self, fn, timeout: float = 120):
         """Run fn(provider) on the browser thread and wait for its result."""
         if self.startup_error:
             raise RuntimeError(f"帳號 {self.account.display} 的瀏覽器無法使用：{self.startup_error}")
+        if self._stop.is_set():
+            raise RuntimeError("服務正在關閉")
         done = threading.Event()
         box: dict = {}
 
@@ -80,7 +89,7 @@ class AccountWorker:
                 for job in self.snipes.values():
                     job.restore()
                 self.ready.set()
-                while True:
+                while not self._stop.is_set():
                     try:
                         job = self._queue.get(timeout=1)
                     except queue.Empty:

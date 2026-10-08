@@ -71,7 +71,11 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "ui":
             from sportflex.web.app import serve
 
-            serve(port=args.port)
+            try:
+                serve(port=args.port)
+            except KeyboardInterrupt:  # uvicorn re-raises Ctrl+C after its clean shutdown
+                pass
+            print("已關閉", flush=True)
             return 0
         if args.command == "book":
             return _book(args)
