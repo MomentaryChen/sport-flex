@@ -5,6 +5,7 @@ import sys
 
 from sportflex.core.accounts import load_accounts, pick_account
 from sportflex.core.engine import grab
+from sportflex.core.events import EventStore
 from sportflex.core.models import iter_dates, slot_matches
 from sportflex.core.venue import get_venue, load_venues
 from sportflex.providers import create_provider, provider_class
@@ -24,6 +25,7 @@ def main(argv: list[str] | None = None) -> int:
             "  python -m sportflex login --account default\n"
             "  python -m sportflex book --name 羽球場_A --date 2026-10-10 --time 20:00\n"
             "  python -m sportflex ui\n"
+            "  python -m sportflex history --days 3\n"
             "\n"
             "--venue 省略時用 venues/ 的第一個場館；--account 省略時用該平台的第一個帳號。\n"
             "book 會送出預約，但不會代按付款。"
@@ -55,6 +57,13 @@ def main(argv: list[str] | None = None) -> int:
     ui.add_argument("--host", default="127.0.0.1", help="監聽位址。Cloud Agent 用 0.0.0.0")
     ui.add_argument("--no-browser", action="store_true", help="不要自動打開本機瀏覽器")
 
+    history = sub.add_parser("history", help="看事件紀錄和每次開搶的結果（保留 30 天）")
+    history.add_argument("--days", type=float, default=7, help="看最近幾天，預設 7")
+    history.add_argument("--account")
+    history.add_argument("--venue")
+    history.add_argument("--kind", help="只看某種事件，例如 booked、alert、login_dropped")
+    history.add_argument("--limit", type=int, default=50)
+
     book = sub.add_parser("book", help="送出一個時段的預約，停在付款前")
     _add_filters(book)
     book.add_argument("--date", required=True, help="YYYY-MM-DD")
@@ -81,6 +90,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "book":
             return _book(args)
+        if args.command == "history":
+            return _history(args)
     except Exception as exc:
         print(f"失敗：{exc}", file=sys.stderr)
         return 1
@@ -171,6 +182,43 @@ def _login(args) -> int:
         print(f"請在瀏覽器以帳號「{account.display}」完成登入，登入狀態會存在 {account.profile_dir}。完成後回到這裡按 Enter。")
         input()
     return 0
+
+
+def _history(args) -> int:
+    store = EventStore()
+    scope = {"account": args.account or "", "venue": args.venue or "", "days": args.days}
+    runs = store.snipe_runs(**scope, limit=args.limit)
+    print(f"開搶結果（最近 {args.days:g} 天，秒數 = 開搶後幾秒）")
+    if not runs:
+        print("  （沒有紀錄）")
+    for run in runs:
+        print(
+            f"  {run['target_date']}  {run['venue']}/{run['account']}  {RESULT_LABELS.get(run['result'], run['result'])}"
+            f" {run['booked']}/{run['total']}  開始查 {_sec(run['fired_sec'])}  釋出 {_sec(run['released_sec'])}"
+            f"  首張到確認頁 {_sec(run['first_booked_sec'])}  結束 {_sec(run['finished_sec'])}  {run['reason']}"
+        )
+        for item in run["targets"]:
+            court = item.get("bookedName") or item.get("name") or "任一場"
+            print(
+                f"      {court} {item.get('time')}  {STATUS_LABELS.get(item.get('status'), '未搶到')}"
+                f"  看到 {_sec(item.get('seenSec'))}  到確認頁 {_sec(item.get('bookedSec'))}"
+                f"  送出耗時 {_sec(item.get('submitSec'))}  查詢 {item.get('attempts') or 0} 次"
+            )
+    events = store.events(**scope, kind=args.kind or "", limit=args.limit)
+    print(f"\n事件（最新在上，最多 {args.limit} 筆）")
+    for event in events:
+        where = "/".join(part for part in (event["venue"], event["account"], event["job"]) if part)
+        print(f"  {event['at'][:19].replace('T', ' ')}  {event['level']:<5} {event['kind']:<14} {where}  {event['message']}")
+    store.close()
+    return 0
+
+
+RESULT_LABELS = {"booked": "全搶到", "partial": "部分搶到", "missed": "沒搶到"}
+STATUS_LABELS = {"booked": "搶到", "skipped": "略過（時長不符）"}
+
+
+def _sec(value) -> str:
+    return "-" if value is None else f"{value:.2f}s"
 
 
 def _book(args) -> int:

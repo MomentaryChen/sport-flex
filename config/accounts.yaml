@@ -4,13 +4,13 @@
 #   - id: family
 #     provider: changjia
 #     label: 家人
-#     username_env: CHANGJIA_FAMILY_ACCOUNT
-#     password_env: CHANGJIA_FAMILY_PASSWORD
+#     username_env: SPORT_FLEX_FAMILY_ACCOUNT
+#     password_env: SPORT_FLEX_FAMILY_PASSWORD
 #     # profile 省略時用 .profiles/<id>
 accounts:
   - id: default
     provider: changjia
     label: 我
-    username_env: account
-    password_env: password
+    username_env: SPORT_FLEX_DEFAULT_ACCOUNT
+    password_env: SPORT_FLEX_DEFAULT_PASSWORD
     profile: .browser-profile   # 沿用原本已登入的 profile；之後可搬到 .profiles/default

@@ -191,6 +191,27 @@ def snipes(request: Request):
     return {"ok": True, "snipes": pool(request).snipes()}
 
 
+@app.get("/api/history")
+def history(
+    request: Request,
+    account: str = "",
+    venue: str = "",
+    kind: str = "",
+    days: float = 7,
+    limit: int = 200,
+):
+    """Recorded events, newest first (kept 30 days)."""
+    store = pool(request).events
+    return {"ok": True, "events": store.events(account=account, venue=venue, kind=kind, days=days, limit=limit)}
+
+
+@app.get("/api/snipe-runs")
+def snipe_runs(request: Request, account: str = "", venue: str = "", days: float = 30, limit: int = 50):
+    """One row per snipe wave: result and seconds after release for each step."""
+    store = pool(request).events
+    return {"ok": True, "runs": store.snipe_runs(account=account, venue=venue, days=days, limit=limit)}
+
+
 @app.get("/api/watch")
 def watch_state(request: Request, venue: str | None = None, account: str | None = None):
     _venue, worker = pool(request).resolve(venue, account)

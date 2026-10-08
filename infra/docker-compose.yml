@@ -1,0 +1,46 @@
+# sport-flex in Docker.
+#
+#   docker compose -f infra/docker-compose.yml up -d --build
+#   docker compose -f infra/docker-compose.yml logs -f
+#   docker compose -f infra/docker-compose.yml down
+#
+# Open http://127.0.0.1:8765/ and log in once with the captcha on the page; the login is kept
+# in the sportflex-profiles volume. The container's Chrome profile is separate from the one used
+# by `python -m sportflex ui` on Windows, so the two never fight over the same profile.
+name: sport-flex
+
+services:
+  sportflex:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile
+    image: sport-flex:latest
+    restart: unless-stopped
+    init: true                  # reaps Chrome child processes and forwards docker stop to the app
+    stop_grace_period: 30s      # time for workers to finish and close Chrome
+    shm_size: 1gb
+    env_file:
+      - ../.env                 # SPORT_FLEX_* accounts and Telegram settings
+    environment:
+      TZ: Asia/Taipei
+      SPORT_FLEX_CHROME_NO_SANDBOX: "1"
+    ports:
+      # The UI has no login of its own; publish on localhost only.
+      - "127.0.0.1:${SPORT_FLEX_PORT:-8765}:8765"
+    volumes:
+      - ../config:/app/config:ro
+      - ../venues:/app/venues:ro
+      - sportflex-output:/app/output
+      - sportflex-profiles:/app/.profiles
+      - sportflex-browser-profile:/app/.browser-profile   # the default account's profile path in accounts.yaml
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/api/meta', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      start_period: 90s
+      retries: 3
+
+volumes:
+  sportflex-output:
+  sportflex-profiles:
+  sportflex-browser-profile:

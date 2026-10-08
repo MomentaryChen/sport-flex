@@ -46,9 +46,9 @@ class MultiNotifier:
 
 
 def default_notifier() -> Notifier:
-    """Console always; Telegram too when TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are in .env."""
+    """Console always; Telegram too when SPORT_FLEX_TELEGRAM_BOT_TOKEN and SPORT_FLEX_TELEGRAM_CHAT_ID are in .env."""
     env = load_env()
     notifiers: list[Notifier] = [ConsoleNotifier()]
-    if env.get("TELEGRAM_BOT_TOKEN") and env.get("TELEGRAM_CHAT_ID"):
-        notifiers.append(TelegramNotifier(env["TELEGRAM_BOT_TOKEN"], env["TELEGRAM_CHAT_ID"]))
+    if env.get("SPORT_FLEX_TELEGRAM_BOT_TOKEN") and env.get("SPORT_FLEX_TELEGRAM_CHAT_ID"):
+        notifiers.append(TelegramNotifier(env["SPORT_FLEX_TELEGRAM_BOT_TOKEN"], env["SPORT_FLEX_TELEGRAM_CHAT_ID"]))
     return MultiNotifier(notifiers)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 
 from sportflex.core.accounts import load_accounts, pick_account
+from sportflex.core.events import EventStore
 from sportflex.core.notify import Notifier, default_notifier
 from sportflex.core.venue import Venue, get_venue, load_venues
 from sportflex.runtime.worker import AccountWorker
@@ -11,12 +12,13 @@ from sportflex.runtime.worker import AccountWorker
 class WorkerPool:
     """One AccountWorker per configured account; different accounts snipe in parallel."""
 
-    def __init__(self, notifier: Notifier | None = None) -> None:
+    def __init__(self, notifier: Notifier | None = None, events: EventStore | None = None) -> None:
         self.venues = load_venues()
         self.accounts = load_accounts()
         self.notifier = notifier or default_notifier()
+        self.events = events or EventStore()
         self.workers = {
-            account_id: AccountWorker(account, self.venues, self.notifier)
+            account_id: AccountWorker(account, self.venues, self.notifier, self.events)
             for account_id, account in self.accounts.items()
         }
 
@@ -36,6 +38,7 @@ class WorkerPool:
             thread.start()
         for thread in threads:
             thread.join()
+        self.events.close()
 
     def resolve(self, venue_id: str | None, account_id: str | None) -> tuple[Venue, AccountWorker]:
         venue = get_venue(venue_id)

@@ -5,7 +5,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-export SPORTFLEX_CHROME_NO_SANDBOX=1
+export SPORT_FLEX_CHROME_NO_SANDBOX=1
 
 if (echo >/dev/tcp/127.0.0.1/8765) >/dev/null 2>&1; then
   echo "sport-flex already listening on port 8765"
