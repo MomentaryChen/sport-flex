@@ -12,5 +12,5 @@ if ! command -v google-chrome >/dev/null 2>&1; then
 fi
 
 python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
+.venv/bin/pip install -r requirements.txt -r requirements-dev.txt
 sudo .venv/bin/playwright install-deps chromium

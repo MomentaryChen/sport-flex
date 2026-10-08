@@ -1,9 +1,11 @@
 {
+  "name": "sport-flex",
   "install": "bash .cursor/install.sh",
-  "terminals": [
+  "start": "bash .cursor/start.sh",
+  "ports": [
     {
       "name": "sport-flex",
-      "command": "SPORTFLEX_CHROME_NO_SANDBOX=1 .venv/bin/python -m sportflex ui --host 0.0.0.0 --port 8765 --no-browser"
+      "port": 8765
     }
   ]
 }
