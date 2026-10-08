@@ -24,6 +24,10 @@ def _no_alert(title: str, body: str) -> None:
     pass
 
 
+def _no_logout() -> None:
+    pass
+
+
 LOGIN_DROPPED_WHILE_FIRING = "搶訂中登入失效，請立刻在網頁上重新登入，系統會繼續搶到截止為止。"
 
 
@@ -129,12 +133,14 @@ class SnipeJob:
         on_grab: Callable[[dict], None],
         on_alert: Alert = _no_alert,
         events: EventStore | None = None,
+        on_logout: Callable[[], None] = _no_logout,
     ) -> None:
         self.venue = venue
         self.account_id = account_id
         self.store = SnipeStore(venue.id, account_id)
         self.on_grab = on_grab
         self.on_alert = on_alert
+        self.on_logout = on_logout  # the worker starts a Telegram re-login
         self.events = events or NullEventStore()
         self.spec: dict | None = None
         self.log = JobLog(_sink(self.events, account_id, venue.id, "snipe"))
@@ -492,6 +498,7 @@ class SnipeJob:
         )
 
     def _need_login_alert(self, body: str) -> None:
+        self.on_logout()
         self._alert_once("login", f"{self.venue.name} 登入已失效", f"搶 {self.spec['targetDate']}：{body}")
 
     def _alert_once(self, kind: str, title: str, body: str) -> None:
@@ -515,6 +522,7 @@ class WatchJob:
         on_grab: Callable[[dict], None],
         on_alert: Alert = _no_alert,
         events: EventStore | None = None,
+        on_logout: Callable[[], None] = _no_logout,
         account_id: str = "",
     ) -> None:
         if spec.get("category") not in venue.categories:
@@ -523,6 +531,7 @@ class WatchJob:
         self.spec = spec
         self.on_grab = on_grab
         self.on_alert = on_alert
+        self.on_logout = on_logout  # the worker starts a Telegram re-login
         self._alerted: set[str] = set()
         self.log = JobLog(_sink(events or NullEventStore(), account_id, venue.id, "watch"))
         self.running = True
@@ -553,6 +562,7 @@ class WatchJob:
             return
         except NeedLogin as exc:
             self.log.note(f"盯場查詢失敗，登入已失效：{exc}", "login_dropped", "warn")
+            self.on_logout()
             self._alert_once("login", f"{self.venue.name} 登入已失效", f"盯場 {spec['date']}：請在網頁上重新登入，盯場會繼續。")
             return
         except Exception as exc:
@@ -570,6 +580,7 @@ class WatchJob:
             result = grab(provider, self.venue, court, board["window"]["date"] or spec["date"], slot)
         except NeedLogin as exc:
             self.log.note(f"搶位失敗，登入已失效：{exc}", "login_dropped", "error")
+            self.on_logout()
             self._alert_once("login", f"{self.venue.name} 登入已失效", f"盯場看到 {slot.time} 有空，但登入失效送不出去，請重新登入。")
             return
         except Exception as exc:
