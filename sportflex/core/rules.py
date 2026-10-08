@@ -23,6 +23,7 @@ class BookingRules(BaseModel):
     snipe_deadline_min: int = 3  # keep trying this long after release
     prepare_lead_sec: int = 60  # park on the reserve page this early
     login_check_lead_min: int = 10  # re-check the login this long before release, alert if it dropped
+    login_recheck_min: int = 30  # while armed (before the lead window), re-check login this often
     poll_sec: float = 1  # pause between availability checks while firing
     throttle_backoff_sec: float = 8  # pause after the site says we are too fast
     watch_interval_sec: int = 15

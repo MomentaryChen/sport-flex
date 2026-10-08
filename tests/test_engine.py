@@ -54,7 +54,13 @@ class FakeProvider(Provider):
 
 @pytest.fixture
 def venue():
-    return Venue(id="t", name="測試中心", provider="fake", categories=["羽球"], rules=BookingRules(poll_sec=0))
+    return Venue(
+        id="t",
+        name="測試中心",
+        provider="fake",
+        categories=["羽球"],
+        rules=BookingRules(poll_sec=0, login_recheck_min=9999),
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -293,3 +299,41 @@ def test_full_success_sends_no_miss_alert(venue):
     job._prepared = True
     job.tick(provider, opens(job) + timedelta(seconds=1))
     assert job.spec["phase"] == "done" and not alerts
+
+
+def test_armed_period_rechecks_login(monkeypatch):
+    recheck_venue = Venue(
+        id="t",
+        name="測試中心",
+        provider="fake",
+        categories=["羽球"],
+        rules=BookingRules(poll_sec=0, login_recheck_min=30),
+    )
+    job, alerts = alerting(recheck_venue)
+    calls = []
+    provider = FakeProvider()
+    provider.refresh_session = lambda: calls.append(1) or {"loggedIn": True, "banner": ""}
+    mono = [5000.0]
+    monkeypatch.setattr("sportflex.core.engine.time.monotonic", lambda: mono[0])
+    base = opens(job) - timedelta(hours=8)
+    job.tick(provider, base)
+    assert len(calls) == 1
+    mono[0] += 20 * 60
+    job.tick(provider, base + timedelta(minutes=20))
+    assert len(calls) == 1
+    mono[0] += 20 * 60
+    job.tick(provider, base + timedelta(minutes=40))
+    assert len(calls) == 2 and not alerts
+
+
+def test_partial_success_alert(venue):
+    job, alerts = alerting(venue, [{"courtId": "A", "name": "A", "time": "19:00"}, {"courtId": "B", "name": "B", "time": "20:00"}])
+    provider = FakeProvider(released_date=job.spec["targetDate"])
+    provider.open = {"A": ["19:00"]}
+    job._prepared = True
+    job._next_at = 0
+    job.tick(provider, opens(job) + timedelta(seconds=1))
+    job._next_at = 0
+    job.tick(provider, opens(job) + timedelta(minutes=venue.rules.snipe_deadline_min, seconds=1))
+    assert alerts and alerts[-1][0].startswith("部分搶到")
+    assert "已搶到" in alerts[-1][1] and "未搶到" in alerts[-1][1]
