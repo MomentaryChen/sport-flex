@@ -6,6 +6,8 @@ import threading
 import time
 
 from sportflex.core.accounts import Account
+from datetime import datetime, timedelta
+
 from sportflex.core.engine import (
     SnipeJob,
     WatchJob,
@@ -137,10 +139,21 @@ class AccountWorker:
             self.startup_error = str(exc)
             self.ready.set()
 
+    def _snipe_near_release(self) -> bool:
+        """Within prepare_lead of opens_at — snipe must keep ticking even during captcha hold."""
+        for job in self.snipes.values():
+            if not job.active or not job.spec:
+                continue
+            opens_at = datetime.fromisoformat(job.spec["opensAt"])
+            now = datetime.now(job.rules.tz)
+            if now >= opens_at - timedelta(seconds=job.rules.prepare_lead_sec):
+                return True
+        return False
+
     def _tick(self, provider: Provider) -> None:
-        if time.time() < self._hold_until:
-            return  # navigating now would throw away the captcha the user is typing
         active = [job for job in self.snipes.values() if job.active]
+        if time.time() < self._hold_until and not (active and self._snipe_near_release()):
+            return  # navigating now would throw away the captcha the user is typing
         for job in active:
             try:
                 job.tick(provider)

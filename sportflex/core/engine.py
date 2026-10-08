@@ -163,6 +163,7 @@ class SnipeJob:
         self._prepared = False
         self._next_at = 0.0
         self._login_stage = 0  # 1 = checked after arming, 2 = checked login_check_lead_min before release
+        self._last_login_check = 0.0  # monotonic; periodic session checks while armed
         self._alerted: set[str] = set()
         self._run: dict | None = None  # timings of the current wave, written to snipe_runs when it ends
         self._clock = (datetime.now(), 0.0)  # (the tick's `now`, monotonic at that tick) for _sec()
@@ -262,15 +263,24 @@ class SnipeJob:
         self._fire(provider, spec, now)
 
     def _check_login(self, provider: Provider, spec: dict, now: datetime, opens_at: datetime) -> None:
-        """Check the session right after arming and again shortly before release, so a dropped
-        login is noticed while there is still time to fix it. Logged out: re-check every minute."""
-        stage = 2 if now >= opens_at - timedelta(minutes=self.rules.login_check_lead_min) else 1
+        """Check the session right after arming, periodically while waiting, and again shortly
+        before release. Logged out: re-check every minute."""
+        near_release = now >= opens_at - timedelta(minutes=self.rules.login_check_lead_min)
+        stage = 2 if near_release else 1
         if spec["phase"] == "need_login":
             if time.time() < self._next_at:
                 return
-        elif self._login_stage >= stage:
-            return
-        self._login_stage = stage
+        elif near_release:
+            if self._login_stage >= 2:
+                return
+            self._login_stage = 2
+        elif self._login_stage >= 1:
+            if time.monotonic() - self._last_login_check < self.rules.login_recheck_min * 60:
+                return
+            self._login_stage = max(self._login_stage, 1)
+        else:
+            self._login_stage = 1
+        self._last_login_check = time.monotonic()
         if provider.refresh_session()["loggedIn"]:
             if spec["phase"] == "need_login":
                 spec["phase"] = "armed"
@@ -465,13 +475,23 @@ class SnipeJob:
         else:
             self.log.note(text)
         self.store.clear()
-        missed = [item for item in (spec or {}).get("targets", []) if item.get("status") != "booked"]
+        targets = (spec or {}).get("targets", [])
+        booked = [item for item in targets if item.get("status") == "booked"]
+        missed = [item for item in targets if item.get("status") != "booked"]
         if missed:
-            names = "、".join(f"{item['name']} {item['time']}" for item in missed)
-            self.on_alert(
-                f"沒搶到 {self.venue.name} {spec['targetDate']}",
-                f"{names}\n{text}。可以到網頁看執行紀錄，或改用盯場等人退訂。",
-            )
+            missed_names = "、".join(f"{item['name']} {item['time']}" for item in missed)
+            tail = f"{text}。可以到網頁看執行紀錄，或改用盯場等人退訂。"
+            if booked:
+                got = "、".join(f"{item['bookedName'] or item['name']} {item['time']}" for item in booked)
+                self.on_alert(
+                    f"部分搶到 {self.venue.name} {spec['targetDate']}",
+                    f"已搶到：{got}\n未搶到：{missed_names}\n{tail}",
+                )
+            else:
+                self.on_alert(
+                    f"沒搶到 {self.venue.name} {spec['targetDate']}",
+                    f"{missed_names}\n{tail}",
+                )
 
     def _sec(self) -> float:
         """Seconds since release on the tick's clock (tests pass a fake `now`)."""
@@ -528,6 +548,7 @@ class SnipeJob:
 
     def _reset_alerts(self) -> None:
         self._login_stage = 0
+        self._last_login_check = 0.0
         self._alerted.clear()
 
 

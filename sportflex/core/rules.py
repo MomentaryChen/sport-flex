@@ -23,6 +23,7 @@ class BookingRules(BaseModel):
     snipe_deadline_min: int = 3  # keep trying this long after release
     prepare_lead_sec: int = 60  # park on the reserve page this early
     login_check_lead_min: int = 10  # re-check the login this long before release, alert if it dropped
+    login_recheck_min: int = 30  # while armed (before the lead window), re-check login this often
     poll_sec: float = 2.5  # pause between snipe rounds (each round checks at most one court)
     api_pause_sec: float = 2.5  # minimum gap between Changjia availability/search API calls
     throttle_backoff_sec: float = 12  # pause after the site says we are too fast
