@@ -28,6 +28,7 @@ SESSION_CHECK_SEC = 15 * 60  # keep-alive visit while no snipe is armed
 LOGIN_HOLD_SEC = 5 * 60  # how long the page waits on the login form for a captcha reply
 REPROMPT_SEC = 10 * 60  # still logged out and no reply: send a fresh captcha this often
 MAX_PROMPTS = 3  # unanswered captchas before going quiet until /login
+CAPTCHA_RETRY_SEC = 60  # fetching the captcha failed: try again this soon
 RELOGIN_HINT = "驗證碼圖片會另外傳到 Telegram，直接回覆就能重新登入。"
 
 
@@ -60,6 +61,7 @@ class AccountWorker:
         self._relogin_needed = False
         self._hold_until = 0.0  # a captcha is waiting for its code: keep the page on the login form
         self._prompted_at = 0.0
+        self._logout_reason = "登入已失效"
         self._prompts = 0  # captchas sent this round without a reply
         self._gave_up = False
         self._checked_at = time.time()
@@ -111,7 +113,8 @@ class AccountWorker:
                 provider = create_provider(self.account.provider, page)
                 self.session = provider.refresh_session()
                 if not self.session["loggedIn"]:
-                    self._logged_out()
+                    self._event("logout_detected", "啟動時發現尚未登入", level="warn")
+                    self._logged_out("服務啟動時發現尚未登入")
                 for job in self.snipes.values():
                     job.restore()
                 self.ready.set()
@@ -164,9 +167,11 @@ class AccountWorker:
             self._alert("登入已失效", "定時檢查發現已被登出。" + (RELOGIN_HINT if self.bot else "請在網頁上重新登入。"))
             self._logged_out()
 
-    def _logged_out(self) -> None:
-        """Called by the jobs and the keep-alive check whenever the site says we're logged out."""
+    def _logged_out(self, reason: str = "登入已失效") -> None:
+        """Called at startup, by the jobs and by the keep-alive check whenever the site says we're logged out."""
         self.session = {**self.session, "loggedIn": False}
+        if not self._relogin_needed:
+            self._logout_reason = reason
         self._relogin_needed = True
 
     def _maybe_prompt_relogin(self, provider: Provider) -> None:
@@ -186,14 +191,17 @@ class AccountWorker:
             username, password = self.account.credentials()
             image = provider.captcha(username, password)
         except Exception as exc:
+            # Not sent, so it doesn't use up a try; retry in a minute (e.g. a network blip at startup).
+            self._prompts -= 1
+            self._prompted_at = time.time() - REPROMPT_SEC + CAPTCHA_RETRY_SEC
             self._event("error", f"取驗證碼失敗：{exc}", level="warn")
             return
         self._hold_until = time.time() + LOGIN_HOLD_SEC
-        self._event("relogin_prompt", "已透過 Telegram 傳送驗證碼")
+        self._event("relogin_prompt", f"已透過 Telegram 傳送驗證碼（{self._logout_reason}）")
         self.bot.ask_code_async(
             self.account.id,
             image,
-            f"[{self.account.id}] {self.account.display} 登入已失效，請回覆這張圖上的驗證碼"
+            f"[{self.account.id}] {self.account.display} {self._logout_reason}，請回覆這張圖上的驗證碼"
             f"（第 {self._prompts}/{MAX_PROMPTS} 次）",
         )
 
