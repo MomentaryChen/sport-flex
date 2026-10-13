@@ -25,6 +25,7 @@ from sportflex.core.venue import Venue
 from sportflex.providers import create_provider
 from sportflex.providers.base import Provider
 from sportflex.runtime.browser import open_page
+from sportflex.core.identity import login_prefix
 from sportflex.runtime.telegram_bot import TelegramBot
 
 SESSION_CHECK_SEC = 15 * 60  # keep-alive visit while no snipe is armed
@@ -313,16 +314,24 @@ class AccountWorker:
             return
         self._hold_until = time.time() + LOGIN_HOLD_SEC
         self._event("relogin_prompt", f"已透過 Telegram 傳送驗證碼（{self._logout_reason}）")
-        self.bot.ask_code_async(
-            self.account.id,
-            image,
-            f"[{self.account.id}] {self.account.display} {self._logout_reason}，請回覆這張圖上的驗證碼"
-            f"（第 {self._prompts}/{MAX_PROMPTS} 次）",
+        self.bot.ask_code_async(self.account.id, image, self._captcha_caption())
+
+    def _captcha_caption(self) -> str:
+        return (
+            f"{self._login_prefix()} {self.account.display} {self._logout_reason}，請回覆這張圖上的驗證碼"
+            f"（第 {self._prompts}/{MAX_PROMPTS} 次）"
         )
+
+    def _login_prefix(self) -> str:
+        """Prefer the bot's name so auto prompts and /login use the same tag."""
+        instance = getattr(self.bot, "instance", "") if self.bot else ""
+        if instance:
+            return login_prefix(self.account.id, instance)
+        return login_prefix(self.account.id)
 
     def _paused_text(self) -> str:
         return (
-            f"[{self.account.id}] {self.account.display} 已傳 {MAX_PROMPTS} 次驗證碼都沒有回覆，先停止提醒。\n"
+            f"{self._login_prefix()} {self.account.display} 已傳 {MAX_PROMPTS} 次驗證碼都沒有回覆，先停止提醒。\n"
             f"要重新登入請傳 /login {self.account.id}（或到網頁上登入）。"
         )
 
@@ -370,7 +379,7 @@ class AccountWorker:
     def captcha(self) -> dict:
         return {"image": base64.b64encode(self.captcha_image()).decode("ascii")}
 
-    def captcha_image(self) -> bytes:
+    def captcha_image(self, *, notify: bool = True) -> bytes:
         username, password = self.account.credentials()
 
         def run(provider: Provider) -> bytes:
@@ -381,14 +390,10 @@ class AccountWorker:
                 self._restart_prompts()
                 self._prompts = 1
                 self._prompted_at = time.time()
-                if self.bot:
+                # /login sends its own caption; notifying here as well would post two photos.
+                if notify and self.bot:
                     self._event("relogin_prompt", "已透過 Telegram 傳送驗證碼（網頁顯示驗證碼）")
-                    self.bot.ask_code_async(
-                        self.account.id,
-                        image,
-                        f"[{self.account.id}] {self.account.display} {self._logout_reason}，請回覆這張圖上的驗證碼"
-                        f"（第 {self._prompts}/{MAX_PROMPTS} 次）",
-                    )
+                    self.bot.ask_code_async(self.account.id, image, self._captcha_caption())
             return image
 
         return self.call(run)

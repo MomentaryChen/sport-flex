@@ -312,6 +312,7 @@
       </div>
       <div class="picker"><label for="venueSelect">場館</label><select id="venueSelect"></select></div>
       <div class="picker"><label for="accountSelect">帳號</label><select id="accountSelect"></select></div>
+      <span class="status hidden" id="instancePill" title="Telegram 驗證碼圖片開頭會標這個名稱，用來分辨是哪一台">這台</span>
       <span class="status" id="sessionPill"><span class="dot"></span><span id="sessionText">檢查登入…</span></span>
       <button class="icon-btn" id="historyBtn" type="button" title="歷史紀錄" aria-label="歷史紀錄">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l3 2"/></svg>
@@ -321,7 +322,7 @@
 
   <main class="page">
     <section class="login hidden" id="loginBox">
-      <strong>這個帳號尚未登入，搶訂前需要先登入</strong>
+      <strong id="loginTitle">這個帳號尚未登入，搶訂前需要先登入</strong>
       <button class="btn" id="loadCaptcha" type="button">顯示驗證碼</button>
       <img id="captcha" alt="驗證碼" class="hidden" />
       <input id="code" placeholder="驗證碼" autocomplete="off" />
@@ -511,6 +512,12 @@
 
     async function loadMeta() {
       state.meta = await api("/api/meta");
+      if (state.meta.instance) {
+        const pill = $("instancePill");
+        pill.textContent = "這台 " + state.meta.instance;
+        pill.classList.remove("hidden");
+        $("loginTitle").textContent = `這個帳號尚未登入。Telegram 請回覆 [${state.meta.instance} · …] 開頭的那張驗證碼`;
+      }
       const venues = $("venueSelect");
       venues.replaceChildren(...state.meta.venues.map((venue) =>
         el("option", { value: venue.id, text: venue.name.replace(/^(新北市|臺北市|台北市)/, "") })));

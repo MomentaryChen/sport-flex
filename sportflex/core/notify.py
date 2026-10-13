@@ -6,6 +6,7 @@ import urllib.request
 from typing import Protocol
 
 from sportflex.core.accounts import load_env
+from sportflex.core.identity import server_label
 
 
 class Notifier(Protocol):
@@ -20,12 +21,16 @@ class ConsoleNotifier:
 class TelegramNotifier:
     """Push through a Telegram bot. Sends on a background thread so the snipe loop never waits."""
 
-    def __init__(self, token: str, chat_id: str) -> None:
+    def __init__(self, token: str, chat_id: str, instance: str = "") -> None:
         self.url = f"https://api.telegram.org/bot{token}/sendMessage"
         self.chat_id = chat_id
+        self.instance = instance
 
     def send(self, title: str, body: str) -> None:
-        threading.Thread(target=self._post, args=(f"{title}\n{body}",), daemon=True).start()
+        text = f"{title}\n{body}"
+        if self.instance:
+            text = f"[{self.instance}] {text}"
+        threading.Thread(target=self._post, args=(text,), daemon=True).start()
 
     def _post(self, text: str) -> None:
         payload = json.dumps({"chat_id": self.chat_id, "text": text}).encode("utf-8")
@@ -50,5 +55,11 @@ def default_notifier() -> Notifier:
     env = load_env()
     notifiers: list[Notifier] = [ConsoleNotifier()]
     if env.get("SPORT_FLEX_TELEGRAM_BOT_TOKEN") and env.get("SPORT_FLEX_TELEGRAM_CHAT_ID"):
-        notifiers.append(TelegramNotifier(env["SPORT_FLEX_TELEGRAM_BOT_TOKEN"], env["SPORT_FLEX_TELEGRAM_CHAT_ID"]))
+        notifiers.append(
+            TelegramNotifier(
+                env["SPORT_FLEX_TELEGRAM_BOT_TOKEN"],
+                env["SPORT_FLEX_TELEGRAM_CHAT_ID"],
+                instance=server_label(),
+            )
+        )
     return MultiNotifier(notifiers)
