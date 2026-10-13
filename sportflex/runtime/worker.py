@@ -28,17 +28,19 @@ from sportflex.providers import create_provider
 from sportflex.providers.base import Provider, ProviderError
 from sportflex.runtime.browser import open_page
 from sportflex.core.identity import login_prefix
+from sportflex.runtime.captcha_ocr import read_captcha
 from sportflex.runtime.telegram_bot import TelegramBot
 
 SESSION_CHECK_SEC = 15 * 60  # keep-alive visit while no snipe is armed
 LOGIN_HOLD_SEC = 5 * 60  # how long the page waits on the login form for a captcha reply
 REPROMPT_SEC = 10 * 60  # still logged out and no reply: send a fresh captcha this often
 MAX_PROMPTS = 3  # unanswered captchas before going quiet until /login
+OCR_SUBMIT_LIMIT = 2  # wrong OCR submits before the image is handed to a person
 CAPTCHA_RETRY_SEC = 60  # fetching the captcha failed: try again this soon
 PAY_REMIND_SEC = 5 * 60  # still unpaid this long after the order: remind once
 DEFAULT_PAY_TIMEOUT_SEC = 590  # the site's OnlinePaymentTimeoutSeconds, when the lookup failed
 BOARD_CACHE_SEC = 30  # reuse one venue/sport/date browse; the page reload button asks for a fresh scan
-RELOGIN_HINT = "驗證碼圖片會另外傳到 Telegram，直接回覆就能重新登入。"
+RELOGIN_HINT = "會先嘗試自動辨識驗證碼；不行時圖片會傳到 Telegram，直接回覆就能重新登入。"
 _BUSY_SNIPE_PHASES = frozenset({"firing", "preparing", "ready"})
 
 
@@ -321,8 +323,9 @@ class AccountWorker:
         return False
 
     def _maybe_prompt_relogin(self, provider: Provider) -> None:
-        """Send a captcha over Telegram; the reply logs in (TelegramBot -> WorkerPool.login_with).
-        After MAX_PROMPTS unanswered captchas, stop and say so until /login restarts it."""
+        """Let OCR submit up to OCR_SUBMIT_LIMIT times. A person is asked only after that many
+        rejections, or when both reads are too uncertain to submit. A rejected image is reloaded
+        in place before the next try. After MAX_PROMPTS unanswered captchas, stop until /login."""
         if not (self._relogin_needed and self.bot) or time.time() - self._prompted_at < REPROMPT_SEC:
             return
         if self._snipe_owns_browser():
@@ -336,23 +339,55 @@ class AccountWorker:
                 self.bot.send_text_async(self._paused_text())
             return
         self._prompted_at = time.time()
-        self._prompts += 1
         try:
             username, password = self.account.credentials()
             image = provider.captcha(username, password)
         except Exception as exc:
             # Not sent, so it doesn't use up a try; retry in a minute (e.g. a network blip at startup).
-            self._prompts -= 1
             self._prompted_at = time.time() - REPROMPT_SEC + CAPTCHA_RETRY_SEC
             self._event("error", f"取驗證碼失敗：{exc}", level="warn")
             return
+        handed = self._ocr_then_maybe_hand_off(provider, username, password, image)
+        if handed is None:
+            return
+        image, fresh = handed
+        self._prompts += 1
         self._hold_until = time.time() + LOGIN_HOLD_SEC
         self._event("relogin_prompt", f"已透過 Telegram 傳送驗證碼（{self._logout_reason}）")
-        self.bot.ask_code_async(self.account.id, image, self._captcha_caption())
+        self.bot.ask_code_async(self.account.id, image, self._captcha_caption(fresh=fresh))
 
-    def _captcha_caption(self) -> str:
+    def _ocr_then_maybe_hand_off(
+        self, provider: Provider, username: str, password: str, image: bytes
+    ) -> tuple[bytes, bool] | None:
+        """None when OCR logged in. Otherwise the image to show a person, and whether a submit was rejected."""
+        rejected = False
+        for attempt in range(1, OCR_SUBMIT_LIMIT + 1):
+            code = read_captcha(image)
+            if code:
+                result = provider.login(code)
+                if result.get("ok"):
+                    self._note_login_success(provider, f"驗證碼已自動辨識並登入（第 {attempt} 次）")
+                    return None
+                rejected = True
+                self._event(
+                    "login_failed",
+                    f"自動辨識第 {attempt} 次被拒絕：{result.get('message', '')}",
+                    level="warn",
+                )
+            if attempt == OCR_SUBMIT_LIMIT and not (rejected and code):
+                return image, rejected
+            try:
+                image = provider.captcha(username, password)
+            except Exception as exc:
+                self._prompted_at = time.time() - REPROMPT_SEC + CAPTCHA_RETRY_SEC
+                self._event("error", f"更新驗證碼失敗：{exc}", level="warn")
+                return None
+        return image, True
+
+    def _captcha_caption(self, *, fresh: bool = False) -> str:
+        ask = "自動辨識未通過，請回覆這張新的驗證碼" if fresh else "請回覆這張圖上的驗證碼"
         return (
-            f"{self._login_prefix()} {self.account.display} {self._logout_reason}，請回覆這張圖上的驗證碼"
+            f"{self._login_prefix()} {self.account.display} {self._logout_reason}，{ask}"
             f"（第 {self._prompts}/{MAX_PROMPTS} 次）"
         )
 
@@ -432,6 +467,14 @@ class AccountWorker:
 
         return self.call(run)
 
+    def _note_login_success(self, provider: Provider, message: str) -> None:
+        self._hold_until = 0
+        self._clear_relogin_state()
+        self.session = provider.refresh_session()
+        if not self.session["loggedIn"]:
+            self.session = provider.refresh_session()
+        self._event("login", message)
+
     def login(self, code: str) -> dict:
         def run(provider: Provider) -> dict:
             self._hold_until = 0
@@ -439,11 +482,7 @@ class AccountWorker:
             result = provider.login(code)
             if result.get("ok"):
                 # Trust the login API first; refresh_session can briefly lag right after submit.
-                self._clear_relogin_state()
-                self.session = provider.refresh_session()
-                if not self.session["loggedIn"]:
-                    self.session = provider.refresh_session()
-                self._event("login", "登入成功")
+                self._note_login_success(provider, "登入成功")
             else:
                 self._event("login_failed", f"登入失敗：{result.get('message', '')}", level="warn")
             return result
