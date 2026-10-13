@@ -435,7 +435,7 @@ def test_uncertain_ocr_sends_the_image_without_submitting(monkeypatch):
     provider = Holding()
     worker._logged_out()
     worker._maybe_prompt_relogin(provider)
-    assert provider.calls == 1 and provider.codes == []
+    assert provider.calls == 2 and provider.codes == []
     assert bot.photos and "請回覆這張圖上的驗證碼" in bot.photos[0]
 
 
@@ -465,6 +465,66 @@ def test_rejected_ocr_reloads_the_image_for_a_person(monkeypatch):
     worker._logged_out()
     worker._maybe_prompt_relogin(provider)
     assert provider.codes == ["F3WU"] and provider.calls == 2 and worker._prompts == 1
+    assert bot.photos and "自動辨識未通過，請回覆這張新的驗證碼" in bot.photos[0]
+
+
+def test_second_ocr_submit_logs_in(monkeypatch):
+    from sportflex.runtime import worker as worker_module
+
+    monkeypatch.setattr(worker_module, "read_captcha", lambda image: "F3WU")
+    worker, bot = make_worker(monkeypatch)
+
+    class Twice:
+        def __init__(self):
+            self.calls = 0
+            self.codes = []
+            self.refreshes = 0
+
+        def captcha(self, username, password):
+            self.calls += 1
+            return f"img{self.calls}".encode()
+
+        def login(self, code):
+            self.codes.append(code)
+            return {"ok": len(self.codes) == 2, "message": "登入成功" if len(self.codes) == 2 else "驗證碼錯誤"}
+
+        def refresh_session(self):
+            self.refreshes += 1
+            return {"loggedIn": self.refreshes > 1, "banner": ""}
+
+    provider = Twice()
+    worker._logged_out()
+    worker._maybe_prompt_relogin(provider)
+    assert provider.codes == ["F3WU", "F3WU"] and provider.calls == 2 and bot.photos == []
+    assert worker.session["loggedIn"] and not worker._relogin_needed
+
+
+def test_two_rejected_ocr_submits_then_ask_a_person(monkeypatch):
+    from sportflex.runtime import worker as worker_module
+
+    monkeypatch.setattr(worker_module, "read_captcha", lambda image: "F3WU")
+    worker, bot = make_worker(monkeypatch)
+
+    class AlwaysWrong:
+        def __init__(self):
+            self.calls = 0
+            self.codes = []
+
+        def captcha(self, username, password):
+            self.calls += 1
+            return f"img{self.calls}".encode()
+
+        def login(self, code):
+            self.codes.append(code)
+            return {"ok": False, "message": "驗證碼錯誤"}
+
+        def refresh_session(self):
+            return {"loggedIn": False, "banner": ""}
+
+    provider = AlwaysWrong()
+    worker._logged_out()
+    worker._maybe_prompt_relogin(provider)
+    assert provider.codes == ["F3WU", "F3WU"] and provider.calls == 3 and worker._prompts == 1
     assert bot.photos and "自動辨識未通過，請回覆這張新的驗證碼" in bot.photos[0]
 
 
