@@ -47,13 +47,41 @@ class ChangjiaProvider(Provider):
         return {"loggedIn": "點我登入" not in text, "banner": text}
 
     def captcha(self, username: str, password: str) -> bytes:
+        """Fill the login form and return the captcha image.
+
+        A later call, while that form is still open, only reloads the image
+        (``reloadCaptcha``). Leaving and reopening the login page would throw away
+        the username and password already on the form.
+        """
         page = self.page
-        page.goto(self.login_url, wait_until="domcontentloaded")
-        page.locator("#inputEmailAccount").fill(username)
-        page.locator("#inputPassword").fill(password)
-        page.locator("#captchaContainer img").wait_for()
+        if self._on_login_form():
+            self._dismiss_alert()
+            page.locator("#inputEmailAccount").fill(username)
+            page.locator("#inputPassword").fill(password)
+            page.locator("#verification_code").fill("")
+            with page.expect_response(lambda response: "captcha.php" in response.url, timeout=15_000):
+                page.locator("#captchaContainer button").click()
+        else:
+            page.goto(self.login_url, wait_until="domcontentloaded")
+            page.locator("#inputEmailAccount").fill(username)
+            page.locator("#inputPassword").fill(password)
+            page.locator("#captchaContainer img").wait_for()
         self.on_list = False
         return page.locator("#captchaContainer img").screenshot(type="jpeg", quality=90)
+
+    def _on_login_form(self) -> bool:
+        return self.page.locator("#verification_code").count() > 0
+
+    def _dismiss_alert(self) -> None:
+        """A failed login leaves a SweetAlert over the form; the refresh button is behind it."""
+        confirm = self.page.locator(".swal2-confirm")
+        if not confirm.count():
+            return
+        try:
+            confirm.first.click(timeout=2_000)
+            self.page.locator(".swal2-container").wait_for(state="hidden", timeout=5_000)
+        except Exception:
+            pass
 
     def login(self, code: str) -> dict:
         page = self.page
