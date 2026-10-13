@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import time
 
@@ -13,6 +14,10 @@ BASE = "https://changjia.sporetrofit.com"
 # 會員中心: its 待付款 button lists unpaid orders. consumeRecord.php itself can't be linked to that
 # tab (it ignores URL parameters and reopens whichever tab was used last).
 UNPAID_URL = BASE + "/My/"
+# createTable answers a too-fast guest with this stub instead of the court list. A short pause and
+# another try returns the real list; it is not a login wall.
+TABLE_ATTEMPTS = 3
+TABLE_PAUSE_SEC = 3.0
 
 
 class ChangjiaProvider(Provider):
@@ -29,6 +34,7 @@ class ChangjiaProvider(Provider):
         self.on_list = False  # page currently shows 場地清單
         self.category = ""  # sport chip active on 場地清單
         self.category_ids: dict[str, str] = {}  # 羽球 -> Badminton, learned from 場地清單
+        self.category_array = ""  # CategoryArrayStr the list page posts with every sport switch
 
     # ---- session -------------------------------------------------------
 
@@ -89,26 +95,32 @@ class ChangjiaProvider(Provider):
         lid = str(venue.params.get("lid") or "").casefold()
         for item in raw:
             if item["category_id"]:
-                self.category_ids[category] = item["category_id"]
+                self.category_ids[self.category or category] = item["category_id"]
                 break
-        return [
-            Court(
-                id=item["lsid"],
-                name=item["name"],
-                venue=item["venue"],
-                category=item["category"],
-                price=item["price"],
-                min_hours=item["min_hours"],
-                raw={
-                    "form_id": item["form_id"],
-                    "lid": item["lid"],
-                    "category_id": item["category_id"],
-                    "list_category": self.category,
-                },
+        courts = []
+        for item in raw:
+            if lid and item["lid"].casefold() != lid:
+                continue
+            # A failed sport switch used to leave the previous sport's forms on the page.
+            if item["category"] and self.category and item["category"] != self.category:
+                continue
+            courts.append(
+                Court(
+                    id=item["lsid"],
+                    name=item["name"],
+                    venue=item["venue"],
+                    category=item["category"],
+                    price=item["price"],
+                    min_hours=item["min_hours"],
+                    raw={
+                        "form_id": item["form_id"],
+                        "lid": item["lid"],
+                        "category_id": item["category_id"],
+                        "list_category": self.category,
+                    },
+                )
             )
-            for item in raw
-            if not lid or item["lid"].casefold() == lid
-        ]
+        return courts
 
     def availability(self, court: Court, query_date: str = "") -> Availability:
         """Ask for the same availability payload the reservation calendar loads."""
@@ -170,39 +182,64 @@ class ChangjiaProvider(Provider):
             category_id = self.category_ids.get(category)
         if not category_id:
             raise ProviderError(f"找不到 {category} 的分類代碼")
-        self.pace_api()
-        result = self.page.evaluate(
-            """async ({ categoryId, category, day, start, end }) => {
-                const body = new URLSearchParams({
-                    LID: "", LIDName: "", CategoryID: categoryId, CategoryName: category,
-                    redirectFromIndex: "true", redirectFromSearch: "false", redirectFromFilter: "true",
-                    startDate: day, endDate: day, startTime: start, endTime: end,
-                });
-                const response = await fetch("/Location/LocationSubList/ajax/createTable/", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-                    body,
-                });
-                if (!response.ok) {
-                    throw new Error("search HTTP " + response.status);
-                }
-                const html = await response.text();
-                const doc = new DOMParser().parseFromString(html, "text/html");
-                const courts = [...doc.querySelectorAll("form")].map((form) => ({
-                    lsid: form.querySelector('input[name="LSID"]')?.value || "",
-                    lid: form.querySelector('input[name="LID"]')?.value || "",
-                })).filter((court) => court.lsid);
-                return { courts, text: doc.body ? doc.body.innerText.slice(0, 200) : "" };
-            }""",
-            {"categoryId": category_id, "category": category, "day": query_date, "start": start, "end": end},
-        )
-        if not result["courts"]:
-            if "頻繁" in result["text"]:
-                raise Throttled(result["text"].strip())
-            if "請登入" in result["text"]:
-                raise NeedLogin(result["text"].strip())
+        fields = {
+            "categoryId": category_id,
+            "category": category,
+            "categoryArray": self.category_array,
+            "day": query_date,
+            "start": start,
+            "end": end,
+        }
+        result = None
+        for _attempt in range(TABLE_ATTEMPTS):
+            self._pace_table()
+            result = self.page.evaluate(
+                """async ({ categoryId, category, categoryArray, day, start, end }) => {
+                    const body = new URLSearchParams({
+                        LID: "", LIDName: "", CategoryID: categoryId, CategoryName: category,
+                        CategoryArrayStr: categoryArray,
+                        redirectFromIndex: "true", redirectFromSearch: "false", redirectFromFilter: "true",
+                        startDate: day, endDate: day, startTime: start, endTime: end,
+                    });
+                    const response = await fetch("/Location/LocationSubList/ajax/createTable/", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+                        body,
+                    });
+                    if (!response.ok) {
+                        throw new Error("search HTTP " + response.status);
+                    }
+                    const html = await response.text();
+                    const doc = new DOMParser().parseFromString(html, "text/html");
+                    const courts = [...doc.querySelectorAll("form")].map((form) => ({
+                        lsid: form.querySelector('input[name="LSID"]')?.value || "",
+                        lid: form.querySelector('input[name="LID"]')?.value || "",
+                    })).filter((court) => court.lsid);
+                    return { courts, html };
+                }""",
+                fields,
+            )
+            if _interpret_table(result["html"]) != "retry":
+                break
+        else:
+            raise Throttled("場地清單暫時忙碌，請稍後再查")
+        kind = _interpret_table(result["html"])
+        if kind == "login":
+            raise NeedLogin("查看這個運動需要先登入")
+        if kind == "retry":
+            raise Throttled("場地清單暫時忙碌，請稍後再查")
+        if not result["courts"] and kind == "empty":
+            text = re.sub(r"<[^>]+>", " ", result["html"])
+            if "頻繁" in text:
+                raise Throttled(text.strip()[:200])
         lid = str(venue.params.get("lid") or "").casefold()
-        return [court["lsid"] for court in result["courts"] if not lid or court["lid"].casefold() == lid]
+        found: list[str] = []
+        for court in result["courts"]:
+            if lid and court["lid"].casefold() != lid:
+                continue
+            if court["lsid"] not in found:
+                found.append(court["lsid"])
+        return found
 
     # ---- booking -------------------------------------------------------
 
@@ -331,11 +368,13 @@ class ChangjiaProvider(Provider):
     def _open_location_list(self, category: str | None) -> str:
         """Open 場地清單 the same way the homepage does, then select a sport."""
         page = self.page
-        with page.expect_response(lambda response: "ajax/createTable/" in response.url, timeout=30_000):
+
+        def open_list() -> None:
             page.goto(BASE + "/", wait_until="domcontentloaded")
             page.locator("#locationList").click()
-        page.wait_for_selector("#tableContainer form", state="attached")
-        self._dismiss_loading()
+
+        self._load_table(open_list)
+        self._remember_catalog()
 
         categories = self._read_categories()
         if not categories:
@@ -349,14 +388,60 @@ class ChangjiaProvider(Provider):
 
     def _show_category(self, button_id: str) -> None:
         page = self.page
-        with page.expect_response(lambda response: "ajax/createTable/" in response.url, timeout=30_000) as info:
-            page.locator(f"#{button_id}").click()
-        self._dismiss_loading()
-        body = info.value.text()
-        if "請登入" in body:
-            raise NeedLogin("查看這個運動需要先登入")
-        if "<form" not in body and "筆結果" not in body:
-            raise ProviderError("場地清單沒有回傳球場")
+        self._load_table(lambda: page.locator(f"#{button_id}").click())
+        self._remember_catalog()
+
+    def _load_table(self, trigger) -> None:
+        """Run one createTable action. A too-fast guest gets a fake login stub; wait and try again."""
+        page = self.page
+        for _attempt in range(TABLE_ATTEMPTS):
+            self._pace_table()
+            with page.expect_response(lambda response: "ajax/createTable/" in response.url, timeout=30_000) as info:
+                trigger()
+            self._dismiss_loading()
+            body = info.value.text()
+            kind = _interpret_table(body)
+            if kind == "ok":
+                if "<form" in body:
+                    page.wait_for_selector("#tableContainer form", state="attached", timeout=5_000)
+                return
+            if kind == "login":
+                self.on_list = False
+                raise NeedLogin("查看這個運動需要先登入")
+            if kind != "retry":
+                self.on_list = False
+                raise ProviderError("場地清單沒有回傳球場")
+        self.on_list = False
+        raise Throttled("場地清單暫時忙碌，請稍後再查")
+
+    def _pace_table(self) -> None:
+        """createTable shares the site's burst limit with the availability API."""
+        pause = max(self.api_pause_sec, TABLE_PAUSE_SEC)
+        wait = pause - (time.time() - self._last_api_at)
+        if wait > 0:
+            time.sleep(wait)
+        self._last_api_at = time.time()
+
+    def _remember_catalog(self) -> None:
+        """羽球 -> Badminton for every sport chip, from the list page's hidden catalog."""
+        field = self.page.locator('input[name="CategoryArrayStr"]')
+        if not field.count():
+            return
+        raw = field.first.input_value()
+        if not raw:
+            return
+        try:
+            items = json.loads(raw)
+        except json.JSONDecodeError:
+            return
+        self.category_array = raw
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("Name") or "").strip()
+            item_id = str(item.get("ItemID") or "").strip()
+            if name and item_id:
+                self.category_ids.setdefault(name, item_id)
 
     def _read_categories(self) -> list[dict]:
         return self.page.locator("#CategoryBtnDiv span").evaluate_all(
@@ -443,6 +528,18 @@ class ChangjiaProvider(Provider):
                 overlay.wait_for(state="hidden", timeout=15_000)
             except Exception:
                 self.page.keyboard.press("Escape")
+
+
+def _interpret_table(body: str) -> str:
+    """What a createTable response is: ok, retry (guest burst stub), login, or empty."""
+    if "<form" in body or "筆結果" in body:
+        return "ok"
+    compact = re.sub(r"\s+", "", re.sub(r"<[^>]+>", "", body or ""))
+    if compact == "請登入以獲得更佳體驗":
+        return "retry"
+    if "請登入" in (body or ""):
+        return "login"
+    return "empty"
 
 
 def _set_input(form, name: str, value: str) -> None:
