@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import queue
 import socket
 import threading
 import time
@@ -157,6 +158,49 @@ def board(
 ):
     found, worker = pool(request).resolve(venue, account)
     return {"ok": True, **worker.board(found, category or found.categories[0], date)}
+
+
+_QUEUE_EMPTY = object()
+
+
+def _poll_queue(events: queue.Queue):
+    try:
+        return events.get(timeout=0.4)
+    except queue.Empty:
+        return _QUEUE_EMPTY
+
+
+@app.get("/api/board/stream")
+async def board_stream(
+    request: Request,
+    venue: str | None = None,
+    account: str | None = None,
+    category: str | None = None,
+    date: str = "",
+):
+    """Server-sent events: one court as soon as its slots are known, then the rest."""
+    found, worker = pool(request).resolve(venue, account)
+    events, token = worker.stream_board(found, category or found.categories[0], date)
+
+    async def generate():
+        try:
+            while not SHUTDOWN.is_set() and not await request.is_disconnected():
+                item = await asyncio.to_thread(_poll_queue, events)
+                if item is _QUEUE_EMPTY:
+                    continue
+                if item is None:
+                    break
+                yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
+                if item.get("type") in {"done", "error"}:
+                    break
+        finally:
+            worker.cancel_board(token)
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.post("/api/grab")

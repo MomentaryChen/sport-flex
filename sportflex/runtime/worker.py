@@ -15,6 +15,7 @@ from sportflex.core.engine import (
     build_board,
     court_public,
     grab,
+    iter_board,
     public_snapshot,
 )
 from sportflex.core.events import EventStore, NullEventStore
@@ -71,6 +72,7 @@ class AccountWorker:
         self._prompts = 0  # captchas sent this round without a reply
         self._gave_up = False
         self._checked_at = time.time()
+        self._board_token = None  # newest timetable scan; an older one stops between courts
         self._queue: queue.Queue = queue.Queue()
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name=f"sportflex-{account.id}", daemon=True)
@@ -414,6 +416,41 @@ class AccountWorker:
 
     def board(self, venue: Venue, category: str, query_date: str) -> dict:
         return self.call(lambda provider: build_board(provider, venue, category, query_date), timeout=90)
+
+    def stream_board(self, venue: Venue, category: str, query_date: str):
+        """Start a timetable scan on the browser thread. Returns ``(queue, token)``.
+
+        The queue receives iter_board events, then ``{"type": "done"}`` or
+        ``{"type": "error", "error"}``, then None. A newer scan replaces the token and
+        the previous scan stops between courts.
+        """
+        if self.startup_error:
+            raise RuntimeError(f"帳號 {self.account.display} 的瀏覽器無法使用：{self.startup_error}")
+        if self._stop.is_set():
+            raise RuntimeError("服務正在關閉")
+        events: queue.Queue = queue.Queue()
+        token = object()
+        self._board_token = token
+
+        def run(provider: Provider) -> None:
+            try:
+                for event in iter_board(
+                    provider, venue, category, query_date, stop=lambda: self._board_token is not token
+                ):
+                    events.put(event)
+                events.put({"type": "done"})
+            except Exception as exc:
+                events.put({"type": "error", "error": str(exc)})
+            finally:
+                events.put(None)
+
+        self._queue.put(run)
+        return events, token
+
+    def cancel_board(self, token) -> None:
+        """Stop a scan if it is still the active one (the client went away or asked again)."""
+        if self._board_token is token:
+            self._board_token = None
 
     def courts(self, venue: Venue, category: str) -> dict:
         courts = self.call(lambda provider: provider.list_courts(venue, category), timeout=60)

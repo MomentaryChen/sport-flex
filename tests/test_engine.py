@@ -339,3 +339,84 @@ def test_partial_success_alert(venue):
     job.tick(provider, opens(job) + timedelta(minutes=venue.rules.snipe_deadline_min, seconds=1))
     assert alerts and alerts[-1][0].startswith("部分搶到")
     assert "已搶到" in alerts[-1][1] and "未搶到" in alerts[-1][1]
+
+
+def _fast_venue():
+    return Venue(
+        id="t",
+        name="測試中心",
+        provider="fake",
+        categories=["羽球"],
+        rules=BookingRules(api_pause_sec=0),
+    )
+
+
+def test_iter_board_yields_each_court_before_the_rest_are_collected():
+    venue = _fast_venue()
+    provider = FakeProvider(released_date="2026-10-10")
+    provider.open = {"A": ["09:00"], "B": ["21:00"]}
+    events = list(engine.iter_board(provider, venue, "羽球", "2026-10-10"))
+    assert [event["type"] for event in events] == ["meta", "court", "court"]
+    assert [court["id"] for court in events[0]["courts"]] == ["A", "B"]
+    assert events[1]["court"]["id"] == "A"
+    assert any(slot["bookable"] and slot["time"].startswith("09:00") for slot in events[1]["court"]["slots"])
+    assert events[1]["window"]["date"] == "2026-10-10"
+    board = engine.build_board(provider, venue, "羽球", "2026-10-10")
+    assert [court["id"] for court in board["courts"]] == ["A", "B"]
+    assert board["window"]["date"] == "2026-10-10"
+
+
+def test_iter_board_stops_before_the_next_court(venue):
+    provider = FakeProvider(released_date="2026-10-10")
+    calls = []
+    original = provider.availability
+
+    def availability(court, query_date=""):
+        calls.append(court.id)
+        return original(court, query_date)
+
+    provider.availability = availability
+    events = list(engine.iter_board(provider, venue, "羽球", "2026-10-10", stop=lambda: len(calls) >= 1))
+    assert calls == ["A"]
+    assert [event["type"] for event in events] == ["meta", "court"]
+    assert events[-1]["court"]["id"] == "A"
+
+
+def test_pause_returns_as_soon_as_the_scan_is_cancelled():
+    assert engine._pause(2.5, lambda: True) is False
+
+
+def test_stream_board_emits_each_court_and_a_cancelled_scan_does_not_query():
+    from sportflex.core.accounts import Account
+    from sportflex.core.notify import ConsoleNotifier
+    from sportflex.runtime.worker import AccountWorker
+
+    worker = AccountWorker(
+        Account(id="me", provider="fake", username_env="U", password_env="P", profile="x"),
+        {},
+        ConsoleNotifier(),
+    )
+    venue = _fast_venue()
+    provider = FakeProvider(released_date="2026-10-10")
+    events, _token = worker.stream_board(venue, "羽球", "2026-10-10")
+    worker._queue.get_nowait()(provider)
+    items = []
+    while True:
+        item = events.get_nowait()
+        if item is None:
+            break
+        items.append(item)
+    assert [item["type"] for item in items] == ["meta", "court", "court", "done"]
+
+    listed = []
+    provider.list_courts = lambda venue, category: listed.append(category) or []
+    events, token = worker.stream_board(venue, "羽球", "2026-10-10")
+    worker.cancel_board(token)
+    worker._queue.get_nowait()(provider)
+    cancelled = []
+    while True:
+        item = events.get_nowait()
+        if item is None:
+            break
+        cancelled.append(item)
+    assert cancelled == [{"type": "done"}] and listed == []
