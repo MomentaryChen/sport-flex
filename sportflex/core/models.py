@@ -21,6 +21,7 @@ class Slot:
     bookable: bool
     status: str
     price: str
+    mine: bool = False  # this account already holds the slot
     raw: dict = field(default_factory=dict)  # provider-specific fields needed to submit
 
 

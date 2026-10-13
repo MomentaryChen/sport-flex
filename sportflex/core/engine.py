@@ -9,7 +9,7 @@ from typing import Callable
 from sportflex.core.events import EventStore, NullEventStore
 from sportflex.core.models import Court, Slot, slot_bounds, slot_matches
 from sportflex.core.notify import Notifier
-from sportflex.core.rules import next_release, slot_end, validate_targets
+from sportflex.core.rules import holds_from_board, next_release, quota_reason, slot_end, validate_targets
 from sportflex.core.storage import SnipeStore
 from sportflex.core.venue import Venue
 from sportflex.providers.base import NeedLogin, Provider, Throttled
@@ -74,6 +74,7 @@ def iter_board(provider: Provider, venue: Venue, category: str, query_date: str,
     if stop and stop():
         return
     courts = provider.list_courts(venue, category)
+    provider.note_roster(venue.id, category, [court.id for court in courts])
     if stop and stop():
         return
     window = {"start": "", "end": "", "date": query_date}
@@ -85,6 +86,10 @@ def iter_board(provider: Provider, venue: Venue, category: str, query_date: str,
         if index and pause > 0 and not _pause(pause, stop):
             return
         availability = provider.availability(court, query_date)
+        shown = availability.query_date or query_date
+        provider.remember_court(venue.id, category, shown, court.id, court.name, availability.slots)
+        if shown != query_date:
+            provider.remember_court(venue.id, category, query_date, court.id, court.name, [])
         window = {
             "start": availability.window_start,
             "end": availability.window_end,
@@ -109,11 +114,11 @@ def _pause(seconds: float, stop) -> bool:
         time.sleep(min(0.2, left))
 
 
-def build_board(provider: Provider, venue: Venue, category: str, query_date: str) -> dict:
+def build_board(provider: Provider, venue: Venue, category: str, query_date: str, stop=None) -> dict:
     """Every court of a sport with its slots for one day."""
     groups = []
     window = {"start": "", "end": "", "date": query_date}
-    for event in iter_board(provider, venue, category, query_date):
+    for event in iter_board(provider, venue, category, query_date, stop=stop):
         if event["type"] == "meta":
             window = event["window"]
         elif event["type"] == "court":
@@ -357,11 +362,55 @@ class SnipeJob:
             item["name"] = court.name
         named = [item["courtId"] for item in spec["targets"] if item["courtId"]]
         first = found[named[0]] if named else courts[0]
+        spec["held"] = self._existing_holds(provider, spec, courts)
+        if spec["phase"] == "need_login":
+            return
         provider.prepare(first)
         self._prepared = True
         spec["phase"] = "ready"
         self.store.save(spec)
         self.log.note(f"已停在 {first.name} 的預約頁，等 {self.rules.release_time}", "ready", court=first.name)
+
+    def _existing_holds(self, provider: Provider, spec: dict, courts: list[Court]) -> list[dict]:
+        """Bookings already on the release day. Counted before we park, so the first submit stays fast."""
+        held: list[dict] = []
+        opens_at = datetime.fromisoformat(spec["opensAt"])
+        try:
+            for court in courts:
+                if datetime.now(self.rules.tz) >= opens_at - timedelta(seconds=15):
+                    self.log.note("快開搶了，剩下的場不再查已訂時段", "held")
+                    break
+                availability = provider.availability(court, spec["targetDate"])
+                if availability.query_date != spec["targetDate"]:
+                    continue
+                for slot in availability.slots:
+                    if not slot.mine:
+                        continue
+                    _start, _end, hours = slot_bounds(slot.time)
+                    held.append({"courtId": court.id, "name": court.name, "time": slot.time, "hours": hours})
+        except Throttled as exc:
+            self.log.note(f"查已訂時段太頻繁：{exc}", "throttled", "warn")
+        except NeedLogin as exc:
+            spec["phase"] = "need_login"
+            self._next_at = time.time() + 15
+            self.log.note(f"開搶前需要登入：{exc}", "login_dropped", "warn")
+            self._need_login_alert("快開搶了，請立刻在網頁上重新登入。")
+        if held:
+            names = "、".join(f"{item['name']} {item['time']}" for item in held)
+            self.log.note(f"這天已經訂了 {names}", "held")
+        return held
+
+    def _known_holds(self, spec: dict) -> list[dict]:
+        held = [dict(item) for item in spec.get("held") or []]
+        for item in spec["targets"]:
+            if item.get("status") == "booked":
+                held.append(
+                    {
+                        "courtId": item.get("bookedCourtId") or item.get("courtId") or "",
+                        "hours": self.rules.slot_hours,
+                    }
+                )
+        return held
 
     def _fire(self, provider: Provider, spec: dict, now: datetime) -> None:
         self._clock = (now, time.monotonic())
@@ -471,6 +520,14 @@ class SnipeJob:
                 item["status"] = "skipped"
                 self.log.note(f"{court.name} {slot.time} 不是 {self.rules.slot_hours:g} 小時，依規定不送出", "skipped")
                 return "skipped"
+            return "miss"
+        reason = quota_reason(self.rules, self._known_holds(spec), court.id, hours)
+        if reason:
+            if item["courtId"]:
+                item["status"] = "skipped"
+                self.log.note(f"{court.name} {slot.time} {reason}", "skipped")
+                return "skipped"
+            self.log.quiet(f"{court.name} {reason}")
             return "miss"
         item["seenSec"] = self._sec()
         self.log.note(
@@ -648,11 +705,18 @@ class WatchJob:
             self.log.note(f"盯場查詢失敗：{exc}", "error", "error")
             return
         self._alerted.discard("login")
-        match = _first_open(board["courts"], spec)
-        if not match:
+        court_id, slot, blocked = _first_open(board["courts"], spec, self.venue.rules)
+        if blocked and not court_id:
+            self.log.quiet(blocked)
+            self._alert_once(
+                "quota",
+                f"{self.venue.name} 這天的預約已滿",
+                f"盯場 {spec['date']}：{blocked}。有人取消後會再搶。",
+            )
+            return
+        if not court_id or slot is None:
             self.log.note(f"{spec['date']} 還沒有符合的空檔", "status")
             return
-        court_id, slot = match
         self.log.note(f"看到空檔 {slot.time}，開始搶", "submit", court=court_id, time=slot.time)
         try:
             court = provider.find_court(self.venue, spec["category"], court_id)
@@ -687,10 +751,13 @@ def _match_start(slots: list[Slot], wanted: str):
     return None
 
 
-def _first_open(courts: list[dict], spec: dict):
-    court_id = spec.get("courtId") or ""
+def _first_open(courts: list[dict], spec: dict, rules=None):
+    """First open slot in range that still fits the day's quota. Returns (court_id, slot, blocked)."""
+    wanted = spec.get("courtId") or ""
+    held = holds_from_board(courts)
+    blocked = None
     for court in courts:
-        if court_id and court["id"] != court_id:
+        if wanted and court["id"] != wanted:
             continue
         for raw in court["slots"]:
             slot = Slot(**raw)
@@ -698,5 +765,11 @@ def _first_open(courts: list[dict], spec: dict):
                 continue
             if not slot_matches(slot, spec.get("timeFrom") or None, spec.get("timeTo") or None):
                 continue
-            return court["id"], slot
-    return None
+            _start, _end, hours = slot_bounds(slot.time)
+            if rules is not None:
+                reason = quota_reason(rules, held, court["id"], hours)
+                if reason:
+                    blocked = reason
+                    continue
+            return court["id"], slot, None
+    return None, None, blocked

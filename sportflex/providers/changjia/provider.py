@@ -157,16 +157,7 @@ class ChangjiaProvider(Provider):
         rows = result["AvailableData"]["DataTable"]["DataRow"]
         if isinstance(rows, dict):
             rows = [rows]
-        slots = [
-            Slot(
-                time=row.get("Time", ""),
-                bookable=row.get("allowBooking") == "Y",
-                status=row.get("Status") or ("可預約" if row.get("allowBooking") == "Y" else "不可預約"),
-                price=row.get("Price") or "",
-                raw={"pay_now": row.get("PayImmediatelyAfterBooking") or ""},
-            )
-            for row in rows
-        ]
+        slots = [_slot(row) for row in rows]
         return Availability(
             query_date=result.get("QueryDate") or query_date,
             window_start=result.get("ReservingStart") or "",
@@ -528,6 +519,18 @@ class ChangjiaProvider(Provider):
                 overlay.wait_for(state="hidden", timeout=15_000)
             except Exception:
                 self.page.keyboard.press("Escape")
+
+
+def _slot(row: dict) -> Slot:
+    bookable = row.get("allowBooking") == "Y"
+    return Slot(
+        time=row.get("Time", ""),
+        bookable=bookable,
+        status=row.get("Status") or ("可預約" if bookable else "不可預約"),
+        price=row.get("Price") or "",
+        mine=row.get("IsMyReservation") == "Y",
+        raw={"pay_now": row.get("PayImmediatelyAfterBooking") or ""},
+    )
 
 
 def _interpret_table(body: str) -> str:

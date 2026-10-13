@@ -4,8 +4,10 @@ import time
 
 from playwright.sync_api import Page
 
-from sportflex.core.models import Availability, Court, OrderOptions, Slot, slot_matches
+from sportflex.core.models import Availability, Court, OrderOptions, Slot, slot_bounds, slot_matches
 from sportflex.core.venue import Venue
+
+HOLD_TTL_SEC = 180
 
 
 class ProviderError(RuntimeError):
@@ -37,6 +39,9 @@ class Provider:
         self.order = OrderOptions()  # set per account by the worker / CLI
         self.api_pause_sec = 0.0  # worker sets from venue rules; 0 = no extra pacing
         self._last_api_at = 0.0
+        self._roster: dict[tuple[str, str], list[str]] = {}
+        self._hold_rows: dict[tuple[str, str, str], dict[str, list[dict]]] = {}
+        self._hold_at: dict[tuple[str, str, str], float] = {}
 
     def pace_api(self) -> None:
         """Wait so back-to-back availability/search calls stay under the venue rate limit."""
@@ -81,6 +86,51 @@ class Provider:
         """Ids (order["luid"]) of this account's orders still waiting for online payment, or None
         when the platform can't tell. Must not navigate away from the current page."""
         return None
+
+    def note_roster(self, venue_id: str, category: str, court_ids: list[str]) -> None:
+        self._roster[(venue_id, category)] = list(court_ids)
+
+    def remember_court(
+        self, venue_id: str, category: str, query_date: str, court_id: str, court_name: str, slots: list[Slot]
+    ) -> None:
+        """Remember which of this court's slots the account already holds, for the quota check."""
+        holds = []
+        for slot in slots:
+            if not slot.mine:
+                continue
+            _start, _end, hours = slot_bounds(slot.time)
+            holds.append({"courtId": court_id, "name": court_name, "time": slot.time, "hours": hours})
+        key = (venue_id, category, query_date)
+        self._hold_rows.setdefault(key, {})[court_id] = holds
+        self._hold_at[key] = time.time()
+
+    def cached_holds(self, venue_id: str, category: str, query_date: str) -> list[dict] | None:
+        """Holds from a recent full timetable, or None when a court is missing or the scan is stale."""
+        roster = self._roster.get((venue_id, category))
+        key = (venue_id, category, query_date)
+        rows = self._hold_rows.get(key)
+        if not roster or rows is None:
+            return None
+        if time.time() - self._hold_at.get(key, 0) > HOLD_TTL_SEC:
+            return None
+        if any(court_id not in rows for court_id in roster):
+            return None
+        return [item for court_id in roster for item in rows[court_id]]
+
+    def my_bookings(self, venue: Venue, category: str, query_date: str) -> list[dict]:
+        """This login's bookings on query_date. Asks every court; a fresh timetable can use cached_holds."""
+        courts = self.list_courts(venue, category)
+        self.note_roster(venue.id, category, [court.id for court in courts])
+        found: list[dict] = []
+        for court in courts:
+            availability = self.availability(court, query_date)
+            shown = availability.query_date or query_date
+            self.remember_court(venue.id, category, shown, court.id, court.name, availability.slots)
+            if shown != query_date:
+                self.remember_court(venue.id, category, query_date, court.id, court.name, [])
+                continue
+            found.extend(self._hold_rows[(venue.id, category, query_date)][court.id])
+        return found
 
     def search(self, venue: Venue, category: str, query_date: str, start: str, end: str) -> list[str]:
         """Ids of courts with a bookable slot starting in [start, end) on query_date.

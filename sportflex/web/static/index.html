@@ -253,6 +253,7 @@
     button.cell:hover { background: var(--accent); border-color: var(--accent); color: #fff; }
     button.cell small { font-weight: 500; opacity: .8; font-family: var(--mono); }
     .cell.taken { background: var(--taken); color: var(--ink-3); }
+    .cell.mine { background: var(--warn-soft); color: var(--warn); font-weight: 700; }
     .cell.none { color: var(--line); }
     .cell.pending { background: linear-gradient(90deg, var(--surface-2), var(--line), var(--surface-2)); background-size: 200% 100%; animation: shimmer 1.2s infinite; }
     .board-status { min-height: 1.2em; margin: 8px 0 0; font-size: 12px; color: var(--ink-3); }
@@ -371,6 +372,17 @@
             <summary>執行紀錄</summary>
             <div class="log-lines" id="log"></div>
           </details>
+          <div class="divider"></div>
+          <div id="watchBox">
+            <div class="release-label">盯已開放的時段</div>
+            <p class="hint" id="watchHint">用右側目前的日期和上午／下午／晚上。看到空檔就送出訂單。</p>
+            <button class="btn btn-block" id="watchStart" type="button">開始盯場</button>
+            <div id="watchRun" class="hidden">
+              <div class="tstatus"><span id="watchStatus"></span><span class="badge">盯場中</span></div>
+              <div class="log-lines" id="watchLog"></div>
+              <button class="btn btn-danger btn-block" id="watchStop" type="button" style="margin-top:8px">停止盯場</button>
+            </div>
+          </div>
           <div class="jobs" id="jobs"></div>
         </div>
       </section>
@@ -394,10 +406,12 @@
             </div>
           </div>
           <div class="dates" id="dates"></div>
+          <p id="boardLock" class="alert hidden">開搶前後暫停查表和手動搶位，避免把預約頁帶走。</p>
           <p id="boardStatus" class="board-status" role="status"></p>
           <div id="board"></div>
           <div class="legend">
             <span><span class="swatch" style="background:var(--accent-soft);border:1px solid var(--accent-line)"></span>可預約（點擊搶）</span>
+            <span><span class="swatch" style="background:var(--warn-soft)"></span>我已預約</span>
             <span><span class="swatch" style="background:var(--taken)"></span>已被預約</span>
           </div>
         </div>
@@ -450,6 +464,7 @@
     const state = {
       meta: null, venue: null, account: "", category: "", date: "", from: "", to: "",
       courts: [], board: null, boardAbort: null, boardSerial: 0, release: null, events: null, shownGrab: 0, snipe: null,
+      watch: null, locked: false,
     };
     const $ = (id) => document.getElementById(id);
     const json = (body) => ({ method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -604,7 +619,19 @@
       }
     }
 
+    function syncPageLock() {
+      const data = state.snipe;
+      const lead = ((state.venue && state.venue.rules.prepare_lead_sec) || 60) * 1000;
+      const opensAt = state.release ? Date.parse(state.release.opensAt) : NaN;
+      const phase = data && data.phase;
+      const near = !!(data && data.running && Number.isFinite(opensAt) && opensAt - Date.now() < lead);
+      state.locked = ["preparing", "ready", "firing"].includes(phase) || near;
+      $("boardLock").classList.toggle("hidden", !state.locked);
+      $("reload").disabled = state.locked;
+    }
+
     function tickCountdown() {
+      syncPageLock();
       if (!state.release) return;
       const remain = new Date(state.release.opensAt) - Date.now();
       const node = $("countdown");
@@ -729,6 +756,7 @@
         }));
       }
       if (data.phase === "need_login") $("loginBox").classList.remove("hidden");
+      syncPageLock();
       const lines = data.log || [];
       $("log").textContent = lines.join("\n") || "還沒有紀錄。";
       if (running) $("logBox").open = true;
@@ -747,6 +775,7 @@
       state.events.onmessage = (event) => {
         const data = JSON.parse(event.data);
         showSnipe(data.snipe);
+        showWatch(data.watch);
         showSession(data.session);
         showGrab(data.lastGrab);
       };
@@ -820,7 +849,9 @@
 
     function slotCell(court, slot) {
       if (!slot) return el("td", {}, el("span", { class: "cell none", text: "·" }));
+      if (slot.mine) return el("td", {}, el("span", { class: "cell mine", title: "這面這個時段已經是你的", text: "我的" }));
       if (!slot.bookable) return el("td", {}, el("span", { class: "cell taken", title: slot.status || "已被預約", text: "—" }));
+      if (state.locked) return el("td", {}, el("span", { class: "cell taken", title: "開搶中，先不要手動搶", text: "搶" }));
       return el("td", {}, el("button", {
         type: "button", class: "cell", title: `搶 ${court.name} ${slot.time}`,
         onclick: () => grab(court, slot),
@@ -1057,7 +1088,76 @@
 
     // ---- grab / result -----------------------------------------------
 
+    function slotHours(time) {
+      const [start, end] = String(time || "").split("-").map((part) => part.trim());
+      const toMin = (value) => {
+        const [hour, minute] = (value || "").split(":").map(Number);
+        return hour * 60 + (minute || 0);
+      };
+      const hours = (toMin(end) - toMin(start)) / 60;
+      return hours > 0 ? hours : 0;
+    }
+
+    function heldHours() {
+      const courts = state.board && state.board.loaded ? Object.values(state.board.loaded) : [];
+      return courts.reduce((sum, court) => sum + (court.slots || []).filter((slot) => slot.mine).reduce((inner, slot) => inner + slotHours(slot.time), 0), 0);
+    }
+
+    async function startWatch() {
+      if (!state.date) {
+        toast("先選右側的日期", "error");
+        return;
+      }
+      const windowText = state.from ? `${state.from}–${state.to}` : "全天";
+      const who = $("accountSelect").selectedOptions[0]?.textContent || state.account;
+      if (!confirm(`用「${who}」盯 ${state.venue.name}\n${state.date} ${state.category} ${windowText}\n\n看到空檔就送出訂單，付款要自己完成。搶訂進行時會先暫停查表。`)) return;
+      try {
+        showWatch(await api("/api/watch", json(target({
+          enabled: true, category: state.category, date: state.date, timeFrom: state.from, timeTo: state.to, courtId: "",
+        }))));
+        toast(state.snipe?.running ? "已設定盯場，搶訂結束後才會開始查" : "已開始盯場");
+      } catch (error) {
+        toast(error.message, "error");
+      }
+    }
+
+    async function stopWatch() {
+      try {
+        showWatch(await api("/api/watch", json(target({ enabled: false }))));
+      } catch (error) {
+        toast(error.message, "error");
+      }
+    }
+
+    function showWatch(data) {
+      if (!data) return;
+      state.watch = data;
+      const running = !!data.running;
+      $("watchStart").classList.toggle("hidden", running);
+      $("watchRun").classList.toggle("hidden", !running);
+      const spec = data.spec || {};
+      const windowText = spec.timeFrom ? `${spec.timeFrom}–${spec.timeTo}` : "全天";
+      const court = spec.courtName || (spec.courtId ? "指定場" : "任一場");
+      $("watchStatus").textContent = [spec.date, windowText, court].filter(Boolean).join(" ");
+      $("watchLog").textContent = (data.log || []).slice(-4).join("\n");
+      const held = heldHours();
+      const limit = state.venue ? state.venue.rules.max_hours_per_day : "";
+      $("watchHint").textContent = held
+        ? `用右側目前的日期和時段。這天你已訂 ${held} 小時（上限 ${limit}）。`
+        : "用右側目前的日期和上午／下午／晚上。看到空檔就送出訂單。";
+    }
+
     async function grab(court, slot) {
+      if (state.locked) {
+        toast("開搶前後暫停手動搶位", "error");
+        return;
+      }
+      const held = heldHours();
+      const limit = state.venue.rules.max_hours_per_day;
+      if (held + state.venue.rules.slot_hours > limit) {
+        toast(`這天已訂 ${held} 小時，上限 ${limit} 小時`, "error");
+        return;
+      }
       if (!confirm(`搶 ${court.name}\n${state.date}  ${slot.time}\n$${slot.price}\n\n會直接送出訂單（訂單成立），付款由你自己完成。`)) return;
       busy("搶位中…");
       try {
@@ -1211,6 +1311,8 @@
     };
     $("snipeBtn").onclick = startSnipe;
     $("cancelBtn").onclick = cancelSnipe;
+    $("watchStart").onclick = startWatch;
+    $("watchStop").onclick = stopWatch;
     $("closeModal").onclick = () => $("modal").classList.add("hidden");
     $("modal").onclick = (event) => { if (event.target === $("modal")) $("modal").classList.add("hidden"); };
     $("loadCaptcha").onclick = async () => {

@@ -1,4 +1,4 @@
-from sportflex.providers.changjia.provider import _interpret_table
+from sportflex.providers.changjia.provider import _interpret_table, _slot
 
 WALL = " \n<h3>請登入以獲得更佳體驗</h3>"
 COURTS = (
@@ -25,6 +25,13 @@ def test_real_login_page_is_not_a_retry():
     # A login form is a real page, not the short guest stub.
     assert _interpret_table(LOGIN_PAGE) == "ok"
     assert _interpret_table(LOGIN_ONLY) == "login"
+
+
+def test_my_reservation_is_not_bookable_by_us():
+    mine = _slot({"Time": "19:00 - 20:00", "allowBooking": "N", "IsMyReservation": "Y", "Price": "490", "Status": "已預約"})
+    assert mine.mine and not mine.bookable and mine.price == "490"
+    free = _slot({"Time": "20:00 - 21:00", "allowBooking": "Y", "IsMyReservation": "N", "Price": "290"})
+    assert free.bookable and not free.mine
 
 
 def test_unrecognized_body_is_empty():

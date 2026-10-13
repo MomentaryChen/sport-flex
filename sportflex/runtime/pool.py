@@ -5,8 +5,9 @@ from datetime import datetime
 
 from sportflex.core.accounts import load_accounts, load_env, pick_account
 from sportflex.core.events import EventStore
-from sportflex.core.models import Slot
+from sportflex.core.models import Slot, slot_bounds
 from sportflex.core.notify import Notifier, default_notifier
+from sportflex.core.rules import quota_reason
 from sportflex.core.venue import Venue, get_venue, load_venues
 from sportflex.core.identity import server_label
 from sportflex.runtime.telegram_bot import TelegramBot
@@ -18,6 +19,7 @@ from sportflex.runtime.telegram_cmd import (
     format_runs,
     format_slots,
     format_snipe,
+    format_watch,
     match_court,
 )
 from sportflex.runtime.worker import AccountWorker
@@ -111,6 +113,9 @@ class WorkerPool:
             state = "瀏覽器無法使用" if worker.startup_error else "已登入" if worker.session.get("loggedIn") else "未登入"
             armed = [_armed_label(job.state()) for job in worker.snipes.values() if job.active]
             extra = f"，搶訂 {'、'.join(armed)}" if armed else ""
+            if worker.watch and worker.watch.running:
+                spec = worker.watch.spec
+                extra += f"，盯場 {spec.get('date', '')} {spec.get('timeFrom', '')}".rstrip()
             lines.append(f"{worker.account.id}（{worker.account.display}）：{state}{extra}")
         return "\n".join(lines) or "沒有帳號"
 
@@ -153,6 +158,41 @@ class WorkerPool:
         resolved = self._resolve_targets(worker, venue, category, targets)
         state = worker.set_snipe(venue, category, resolved)
         return format_snipe(venue.name, state)
+
+    def watch_text(self, account_id: str | None, venue_id: str | None) -> str:
+        venue, worker, _category = self._target(account_id, venue_id, None)
+        return format_watch(self._watch_venue_name(worker, venue), worker.watch_state())
+
+    def start_watch_text(self, account_id: str | None, venue_id: str | None, category: str | None, spec: dict) -> str:
+        venue, worker, category = self._target(account_id, venue_id, category)
+        court_id = ""
+        court_name = ""
+        if spec.get("court"):
+            court = match_court(worker.courts(venue, category)["courts"], spec["court"])
+            court_id, court_name = court["id"], court["name"]
+        saved = {
+            "category": category,
+            "date": spec["date"],
+            "timeFrom": spec.get("timeFrom") or "",
+            "timeTo": spec.get("timeTo") or "",
+            "courtId": court_id,
+            "courtName": court_name,
+        }
+        state = worker.set_watch(venue, saved)
+        return format_watch(venue.name, state)
+
+    def stop_watch_text(self, account_id: str | None, venue_id: str | None) -> str:
+        venue, worker, _category = self._target(account_id, venue_id, None)
+        if not worker.watch or not worker.watch.running:
+            return format_watch(venue.name, worker.watch_state())
+        name = self._watch_venue_name(worker, venue)
+        worker.set_watch(None, None)
+        return f"已停止盯場 {name}"
+
+    def _watch_venue_name(self, worker: AccountWorker, fallback: Venue) -> str:
+        spec = worker.watch.spec if worker.watch else {}
+        venue = self.venues.get(spec.get("venue") or "")
+        return venue.name if venue else fallback.name
 
     def cancel_text(self, account_id: str | None, venue_id: str | None) -> str:
         venue, worker, _category = self._target(account_id, venue_id, None)
@@ -202,6 +242,16 @@ class WorkerPool:
             short = query_date[5:].replace("-", "/")
             raise ValueError(f"{when} 有多面可訂：{names}\n請指定場地，例如 /book {short} {when} {sample}")
         court, raw = opened[0]
+        _start, _end, hours = slot_bounds(raw.get("time") or "")
+        held = [
+            {"courtId": item["id"], "hours": slot_bounds(slot.get("time") or "")[2]}
+            for item in board.get("courts") or []
+            for slot in item.get("slots") or []
+            if slot.get("mine")
+        ]
+        reason = quota_reason(venue.rules, held, court["id"], hours)
+        if reason:
+            raise ValueError(reason)
         price = f"  ${raw['price']}" if raw.get("price") else ""
         text = (
             f"即將用「{worker.account.display}」訂 {venue.name}\n"

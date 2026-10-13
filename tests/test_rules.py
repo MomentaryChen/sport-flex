@@ -3,7 +3,7 @@ from datetime import datetime
 import pytest
 from pydantic import ValidationError
 
-from sportflex.core.rules import BookingRules, next_release, validate_targets
+from sportflex.core.rules import BookingRules, holds_from_board, next_release, quota_reason, validate_targets
 from sportflex.core.venue import load_venues
 
 TZ = BookingRules().tz
@@ -70,6 +70,17 @@ def test_targets_same_court():
     with pytest.raises(ValueError, match="不同場"):
         validate_targets(BookingRules(), raw)
     assert len(validate_targets(BookingRules(distinct_courts=False), raw)) == 2
+
+
+def test_quota_counts_hours_already_held():
+    rules = BookingRules()
+    held = [{"courtId": "A", "hours": 1}, {"courtId": "B", "hours": 1}]
+    assert "最多" in quota_reason(rules, held, "C", 1)
+    assert quota_reason(rules, held[:1], "C", 1) is None
+    assert "不同場" in quota_reason(rules, held[:1], "A", 1)
+    assert quota_reason(BookingRules(distinct_courts=False), held[:1], "A", 1) is None
+    board = [{"id": "A", "name": "場A", "slots": [{"time": "08:00 - 09:00", "mine": True}, {"time": "09:00 - 10:00", "mine": False}]}]
+    assert holds_from_board(board) == [{"courtId": "A", "name": "場A", "time": "08:00 - 09:00", "hours": 1.0}]
 
 
 def test_targets_not_on_the_hour():

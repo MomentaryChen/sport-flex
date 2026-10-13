@@ -21,6 +21,7 @@ class FakeProvider(Provider):
         self.released_date = released_date
         self.logged_in = logged_in
         self.open: dict[str, list[str]] = {}  # court id -> open start times
+        self.mine: dict[str, list[str]] = {}  # court id -> starts this account already holds
         self.hours = 1
         self.submitted: list[tuple[str, str, str]] = []
         self.prepared: list[str] = []
@@ -41,7 +42,16 @@ class FakeProvider(Provider):
         for hour in range(6, 22):
             start = f"{hour:02d}:00"
             end = f"{hour + self.hours:02d}:00"
-            slots.append(Slot(time=f"{start} - {end}", bookable=start in self.open.get(court.id, []), status="", price="290"))
+            is_mine = start in self.mine.get(court.id, [])
+            slots.append(
+                Slot(
+                    time=f"{start} - {end}",
+                    bookable=start in self.open.get(court.id, []) and not is_mine,
+                    status="已預約" if is_mine else "",
+                    price="290",
+                    mine=is_mine,
+                )
+            )
         return Availability(query_date=query_date, window_start="", window_end="", slots=slots)
 
     def prepare(self, court):
@@ -159,6 +169,31 @@ def test_arm_rejects_unknown_category(venue):
         SnipeJob(venue, "me", lambda r: None).arm("籃球", [{"courtId": "A", "time": "19:00"}])
 
 
+def test_prepare_skips_when_the_day_is_already_full(venue):
+    grabs = []
+    job = armed(venue, grabs, [{"courtId": "A", "name": "A", "time": "19:00"}])
+    provider = FakeProvider(released_date=job.spec["targetDate"])
+    provider.open = {"A": ["19:00"]}
+    provider.mine = {"B": ["10:00", "11:00"]}
+    job.tick(provider, opens(job) - timedelta(seconds=30))
+    assert len(job.spec["held"]) == 2 and job.spec["phase"] == "ready"
+    job.tick(provider, opens(job) + timedelta(seconds=1))
+    assert provider.submitted == []
+    assert job.spec["targets"][0]["status"] == "skipped"
+
+
+def test_any_court_skips_a_court_already_booked(venue):
+    job = armed(venue, [], [{"courtId": "", "time": "19:00"}])
+    provider = FakeProvider(released_date=job.spec["targetDate"])
+    provider.open = {"A": ["19:00"], "B": ["19:00"]}
+    provider.mine = {"A": ["08:00"]}
+    job.tick(provider, opens(job) - timedelta(seconds=30))
+    job.tick(provider, opens(job) + timedelta(seconds=1))
+    job._next_at = 0
+    job.tick(provider, opens(job) + timedelta(seconds=2))
+    assert provider.submitted == [("B", job.spec["targetDate"], "19:00 - 20:00")]
+
+
 def test_watch_grabs_first_matching_slot(venue, monkeypatch):
     monkeypatch.setattr(engine.time, "sleep", lambda s: None)
     grabs = []
@@ -168,6 +203,26 @@ def test_watch_grabs_first_matching_slot(venue, monkeypatch):
     job.tick(provider)
     assert provider.submitted == [("B", "2026-10-10", "20:00 - 21:00")]
     assert not job.running and grabs
+
+
+def test_watch_skips_a_held_court_and_a_full_day(venue, monkeypatch):
+    monkeypatch.setattr(engine.time, "sleep", lambda s: None)
+    provider = FakeProvider(released_date="2026-10-10")
+    provider.mine = {"A": ["08:00"]}
+    provider.open = {"A": ["20:00"], "B": ["20:00"]}
+    alerts = []
+    note = lambda title, body: alerts.append((title, body))
+    job = WatchJob(venue, {"category": "羽球", "date": "2026-10-10", "timeFrom": "18:00"}, lambda result: None, note)
+    job.tick(provider)
+    assert provider.submitted == [("B", "2026-10-10", "20:00 - 21:00")]
+
+    provider = FakeProvider(released_date="2026-10-10")
+    provider.mine = {"A": ["08:00", "09:00"]}
+    provider.open = {"B": ["20:00"]}
+    job = WatchJob(venue, {"category": "羽球", "date": "2026-10-10", "timeFrom": "18:00"}, lambda result: None, note)
+    job.tick(provider)
+    assert provider.submitted == []
+    assert job.running and any("小時" in body for _title, body in alerts)
 
 
 def test_any_court_takes_first_free(venue):
@@ -420,6 +475,52 @@ def test_stream_board_emits_each_court_and_a_cancelled_scan_does_not_query():
             break
         cancelled.append(item)
     assert cancelled == [{"type": "done"}] and listed == []
+
+
+def test_stream_board_refuses_while_a_snipe_is_firing():
+    from sportflex.core.accounts import Account
+    from sportflex.core.notify import ConsoleNotifier
+    from sportflex.runtime.worker import AccountWorker
+
+    worker = AccountWorker(
+        Account(id="me", provider="fake", username_env="U", password_env="P", profile="x"),
+        {},
+        ConsoleNotifier(),
+    )
+    venue = _fast_venue()
+    job = armed(venue, [])
+    job.spec["phase"] = "firing"
+    worker.snipes[venue.id] = job
+    provider = FakeProvider(released_date="2026-10-10")
+    events, _token = worker.stream_board(venue, "羽球", "2026-10-10")
+    worker._queue.get_nowait()(provider)
+    items = []
+    while True:
+        item = events.get_nowait()
+        if item is None:
+            break
+        items.append(item)
+    assert items[0]["type"] == "error" and "暫停查表" in items[0]["error"]
+
+
+def test_watch_file_restores_after_restart(tmp_path, monkeypatch):
+    from sportflex.core.accounts import Account
+    from sportflex.core.notify import ConsoleNotifier
+    from sportflex.core.storage import WatchStore
+    from sportflex.runtime.worker import AccountWorker
+
+    monkeypatch.setattr("sportflex.core.storage.WATCHES_DIR", tmp_path)
+    venue = _fast_venue()
+    WatchStore("me").save(
+        {"venue": venue.id, "category": "羽球", "date": "2026-10-20", "timeFrom": "18:00", "timeTo": "23:00", "courtId": ""}
+    )
+    worker = AccountWorker(
+        Account(id="me", provider="fake", username_env="U", password_env="P", profile="x"),
+        {venue.id: venue},
+        ConsoleNotifier(),
+    )
+    worker._restore_watch()
+    assert worker.watch and worker.watch.running and worker.watch.spec["date"] == "2026-10-20"
 
 
 def _board_worker():
