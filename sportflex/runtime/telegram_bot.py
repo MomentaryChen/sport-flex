@@ -14,6 +14,7 @@ from sportflex.runtime.telegram_cmd import (
     parse_book_tokens,
     parse_slots_args,
     parse_snipe_tokens,
+    parse_watch_args,
     pop_known,
     pop_venue,
 )
@@ -28,6 +29,8 @@ HELP = (
     "/snipe 19:00 [20:00]  搶下一波（任一場）\n"
     "/snipe A 19:00  指定場地\n"
     "/cancel  取消搶訂\n"
+    "/watch 明天 晚上  盯已開放的時段，有空就訂\n"
+    "/watch off  停止盯場\n"
     "/book 明天 19:00 [場地]  訂已開放的時段（會再請你 /ok）\n"
     "/courts  球場清單\n"
     "/history  最近開搶\n"
@@ -196,6 +199,16 @@ class TelegramBot:
             self._drop_confirm()
             targets = parse_snipe_tokens(tokens)
             self._background(lambda: ctrl.arm_text(account_id, venue_id, category, targets))
+        elif name == "/watch":
+            if not tokens:
+                self.send_text(ctrl.watch_text(account_id, venue_id))
+                return
+            self._drop_confirm()
+            spec = parse_watch_args(tokens, today)
+            if spec["stop"]:
+                self._background(lambda: ctrl.stop_watch_text(account_id, venue_id))
+            else:
+                self._background(lambda: ctrl.start_watch_text(account_id, venue_id, category, spec))
         elif name == "/book":
             query_date, when, court = parse_book_tokens(tokens, today)
             gen = self._confirm_gen

@@ -180,6 +180,31 @@ def parse_snipe_tokens(tokens: list[str]) -> list[dict]:
     return targets
 
 
+def parse_watch_args(tokens: list[str], today: date) -> dict:
+    """`/watch off` stops. Otherwise a date, an optional period, and an optional court name."""
+    if len(tokens) == 1 and tokens[0].casefold() in {"off", "stop", "停", "停止"}:
+        return {"stop": True}
+    query_date = ""
+    window: tuple[str, str] | None = None
+    court: list[str] = []
+    for token in tokens:
+        if looks_like_date(token):
+            if query_date:
+                raise ValueError("日期請只給一個")
+            query_date = resolve_date(token, today)
+            continue
+        if window is None:
+            parsed = parse_window(token)
+            if parsed is not None:
+                window = parsed
+                continue
+        court.append(token)
+    if not query_date:
+        raise ValueError("請給日期，例如 /watch 明天 晚上")
+    start, end = window or ("", "")
+    return {"stop": False, "date": query_date, "timeFrom": start, "timeTo": end, "court": " ".join(court)}
+
+
 def parse_book_tokens(tokens: list[str], today: date) -> tuple[str, str, str]:
     query_date = ""
     when = ""
@@ -297,6 +322,26 @@ def format_snipe(venue_name: str, state: dict) -> str:
         lines.append(f"・{item.get('name') or '任一場'} {item.get('time')}{extra}")
     if state.get("running"):
         lines.append("看到空檔會送出訂單，付款要自己完成。取消：/cancel")
+    return "\n".join(lines)
+
+
+def format_watch(venue_name: str, state: dict) -> str:
+    spec = state.get("spec") or {}
+    if not state.get("running"):
+        return (
+            f"{venue_name} 目前沒有盯場\n"
+            "設定：/watch 明天 晚上\n"
+            "指定場地：/watch 明天 19:00 A\n"
+            "停止：/watch off"
+        )
+    window = "–".join(part for part in (spec.get("timeFrom") or "", spec.get("timeTo") or "") if part)
+    court = spec.get("courtName") or ("指定場" if spec.get("courtId") else "任一場")
+    bits = [spec.get("category") or "", spec.get("date") or "", window or "全天", court]
+    lines = [f"盯場 {venue_name} " + " ".join(bit for bit in bits if bit)]
+    lines.append("看到空檔會送出訂單，付款要自己完成。停止：/watch off")
+    log = state.get("log") or []
+    if log:
+        lines.append(log[-1])
     return "\n".join(lines)
 
 

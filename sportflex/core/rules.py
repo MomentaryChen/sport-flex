@@ -5,6 +5,8 @@ from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from sportflex.core.models import slot_bounds
+
 WEEKDAYS = "一二三四五六日"
 
 
@@ -114,6 +116,39 @@ def validate_targets(rules: BookingRules, raw: list) -> list[dict]:
     if not 1 <= len(targets) <= limit:
         raise ValueError(f"請選 1 到 {limit} 個目標，各 {_num(rules.slot_hours)} 小時")
     return targets
+
+
+def quota_reason(rules: BookingRules, held: list[dict], court_id: str, hours: float) -> str | None:
+    """Why this account must not book `hours` more on `court_id`.
+
+    `held` is what the account already has that day: each item has `courtId` and `hours`.
+    A snipe's own bookings belong in `held` too, so two targets plus an older order can't slip past.
+    """
+    used = sum(float(item.get("hours") or 0) for item in held)
+    if used + hours > rules.max_hours_per_day + 1e-9:
+        return f"同一天最多 {_num(rules.max_hours_per_day)} 小時，目前已有 {_num(used)} 小時"
+    if rules.distinct_courts and court_id and any((item.get("courtId") or "") == court_id for item in held):
+        return "同一天要不同場，這面已經有預約"
+    return None
+
+
+def holds_from_board(courts: list[dict]) -> list[dict]:
+    """Slots on a timetable that this account already booked."""
+    held = []
+    for court in courts:
+        for raw in court.get("slots") or []:
+            if not raw.get("mine"):
+                continue
+            _start, _end, hours = slot_bounds(raw.get("time") or "")
+            held.append(
+                {
+                    "courtId": court.get("id") or "",
+                    "name": court.get("name") or "",
+                    "time": raw.get("time") or "",
+                    "hours": hours,
+                }
+            )
+    return held
 
 
 def slot_end(start: str, hours: float) -> str:

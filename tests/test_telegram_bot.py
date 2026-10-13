@@ -179,6 +179,18 @@ class Control:
         self.calls.append(("cancel", account_id))
         return "已取消搶訂"
 
+    def watch_text(self, account_id, venue_id):
+        self.calls.append(("watch-state", account_id))
+        return "目前沒有盯場"
+
+    def start_watch_text(self, account_id, venue_id, category, spec):
+        self.calls.append(("watch", category, spec["date"], spec["timeFrom"], spec["court"]))
+        return "盯場中"
+
+    def stop_watch_text(self, account_id, venue_id):
+        self.calls.append(("unwatch", account_id))
+        return "已停止盯場"
+
     def preview_book(self, account_id, venue_id, category, court, query_date, when):
         self.calls.append(("preview", category, court, query_date, when))
         return dict(self.plan)
@@ -219,6 +231,12 @@ def test_slots_snipe_and_release_commands():
     )
     bot.handle(message("/release"))
     assert ctrl.calls[-1] == ("release", None)
+    bot.handle(message("/watch"))
+    assert ctrl.calls[-1] == ("watch-state", None)
+    bot.handle(message("/watch 明天 晚上 A"))
+    assert ctrl.calls[-1] == ("watch", None, "2026-10-14", "18:00", "A")
+    bot.handle(message("/watch off"))
+    assert ctrl.calls[-1] == ("unwatch", None)
     bot.handle(message("/board@SportBot 19:00"))
     assert ctrl.calls[-1][0] == "slots" and ctrl.calls[-1][-2:] == ("19:00", "20:00")
 

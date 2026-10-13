@@ -114,6 +114,38 @@ def test_book_preview_requires_one_court_then_places(pool):
     assert pool.worker.grabbed == [("A", "2026-10-20", "19:00 - 20:00", {"lid": "XDSC"})]
 
 
+def test_watch_command_and_quota(pool):
+    assert "沒有盯場" in pool.watch_text(None, None)
+
+    class Watch:
+        def __init__(self, spec):
+            self.running = True
+            self.spec = spec
+
+    def set_watch(venue, spec):
+        if venue is None or spec is None:
+            if pool.worker.watch:
+                pool.worker.watch.running = False
+            return {"running": False, "spec": None, "log": []}
+        pool.worker.watch = Watch({**spec, "venue": venue.id})
+        return {"running": True, "spec": pool.worker.watch.spec, "log": ["開始盯"]}
+
+    pool.worker.set_watch = set_watch
+    text = pool.start_watch_text(None, None, "羽球", {"date": "2026-10-20", "timeFrom": "18:00", "timeTo": "23:00", "court": "A"})
+    assert "盯場" in text and pool.worker.watch.spec["courtId"] == "A"
+    assert pool.stop_watch_text(None, None).startswith("已停止盯場")
+
+    def with_mine(venue, category, query_date):
+        data = board(venue, category, query_date)
+        data["courts"][0]["slots"].append({"time": "08:00 - 09:00", "bookable": False, "mine": True, "price": "290"})
+        data["courts"][1]["slots"].append({"time": "09:00 - 10:00", "bookable": False, "mine": True, "price": "290"})
+        return data
+
+    pool.worker.board = with_mine
+    with pytest.raises(ValueError, match="最多"):
+        pool.preview_book(None, None, "羽球", "A", "2026-10-20", "19:00")
+
+
 def test_book_outside_window(pool):
     pool.worker.board = lambda venue, category, query_date: board(venue, category, query_date, date_override="2026-10-13")
     with pytest.raises(ValueError, match="不在可預約範圍"):

@@ -6,7 +6,8 @@ import sys
 from sportflex.core.accounts import load_accounts, pick_account
 from sportflex.core.engine import grab
 from sportflex.core.events import EventStore
-from sportflex.core.models import iter_dates, slot_matches
+from sportflex.core.models import iter_dates, slot_bounds, slot_matches
+from sportflex.core.rules import quota_reason
 from sportflex.core.venue import get_venue, load_venues
 from sportflex.providers import create_provider, provider_class
 from sportflex.runtime.browser import open_page
@@ -240,6 +241,10 @@ def _book(args) -> int:
             raise RuntimeError("找不到時段 " + args.time + "。可選：" + "、".join(item.time for item in availability.slots))
         if not slot.bookable:
             raise RuntimeError(f"{slot.time} 目前不可預約（{slot.status}）")
+        _start, _end, hours = slot_bounds(slot.time)
+        reason = quota_reason(venue.rules, provider.my_bookings(venue, category, args.date), court.id, hours)
+        if reason:
+            raise RuntimeError(reason)
         result = grab(provider, venue, court, args.date, slot)
         print(f"已送出 {venue.name} {court.name}  {args.date}  {slot.time}  ${slot.price}")
         order = result.get("order")

@@ -19,11 +19,13 @@ from sportflex.core.engine import (
     public_snapshot,
 )
 from sportflex.core.events import EventStore, NullEventStore
-from sportflex.core.models import Slot
+from sportflex.core.models import Slot, slot_bounds
 from sportflex.core.notify import Notifier
+from sportflex.core.rules import quota_reason
+from sportflex.core.storage import WatchStore
 from sportflex.core.venue import Venue
 from sportflex.providers import create_provider
-from sportflex.providers.base import Provider
+from sportflex.providers.base import Provider, ProviderError
 from sportflex.runtime.browser import open_page
 from sportflex.runtime.telegram_bot import TelegramBot
 
@@ -128,6 +130,7 @@ class AccountWorker:
                     self._logged_out("服務啟動時發現尚未登入")
                 for job in self.snipes.values():
                     job.restore()
+                self._restore_watch()
                 self.ready.set()
                 while not self._stop.is_set():
                     try:
@@ -168,6 +171,8 @@ class AccountWorker:
                 except Exception as exc:
                     self.watch.log.note(f"盯場出錯：{exc}")
             self._keepalive(provider)
+        if self.watch and not self.watch.running:
+            WatchStore(self.account.id).clear()
         self._check_payments(provider)
         self._maybe_prompt_relogin(provider)
 
@@ -412,10 +417,77 @@ class AccountWorker:
         result = self.call(run)
         return {**result, **self.session_info()}
 
+    # ---- the booking page ------------------------------------------------
+
+    def page_lock_reason(self) -> str:
+        """While a snipe is about to fire, or is firing, other work must not navigate the page."""
+        for job in self.snipes.values():
+            spec = job.spec
+            if not spec or not job.active:
+                continue
+            phase = spec.get("phase")
+            near = False
+            try:
+                opens_at = datetime.fromisoformat(spec["opensAt"])
+                now = datetime.now(job.rules.tz)
+                near = now >= opens_at - timedelta(seconds=job.rules.prepare_lead_sec)
+            except (KeyError, TypeError, ValueError):
+                near = False
+            if phase in _BUSY_SNIPE_PHASES or near:
+                when = spec.get("targetDate") or ""
+                return f"正在搶 {when}，開搶前後暫停查表和手動訂場，以免把預約頁帶走"
+        return ""
+
+    def _ensure_page_free(self) -> None:
+        reason = self.page_lock_reason()
+        if reason:
+            raise ProviderError(reason)
+
+    def _restore_watch(self) -> None:
+        saved = WatchStore(self.account.id).load()
+        if not saved:
+            return
+        venue = self.venues.get(saved.get("venue") or "")
+        if venue is None:
+            WatchStore(self.account.id).clear()
+            return
+        try:
+            self.watch = self._new_watch(venue, saved)
+        except ValueError as exc:
+            self._event("error", f"無法恢復盯場：{exc}", level="warn")
+            WatchStore(self.account.id).clear()
+
+    def _new_watch(self, venue: Venue, spec: dict) -> WatchJob:
+        return WatchJob(
+            venue,
+            spec,
+            self._record_grab,
+            self._alert,
+            self.events,
+            on_logout=self._logged_out,
+            account_id=self.account.id,
+        )
+
     # ---- browsing and booking -----------------------------------------
 
     def board(self, venue: Venue, category: str, query_date: str) -> dict:
-        return self.call(lambda provider: build_board(provider, venue, category, query_date), timeout=90)
+        def run(provider: Provider) -> dict:
+            self._ensure_page_free()
+            stopped = False
+
+            def stop() -> bool:
+                nonlocal stopped
+                if self.page_lock_reason():
+                    stopped = True
+                    return True
+                return False
+
+            built = build_board(provider, venue, category, query_date, stop=stop)
+            if stopped:
+                raise ProviderError(self.page_lock_reason())
+            return built
+
+        return self.call(run, timeout=90)
 
     def stream_board(self, venue: Venue, category: str, query_date: str):
         """Start a timetable scan on the browser thread. Returns ``(queue, token)``.
@@ -433,12 +505,24 @@ class AccountWorker:
         self._board_token = token
 
         def run(provider: Provider) -> None:
+            locked = False
+
+            def stop() -> bool:
+                nonlocal locked
+                if self._board_token is not token:
+                    return True
+                if self.page_lock_reason():
+                    locked = True
+                    return True
+                return False
+
             try:
-                for event in iter_board(
-                    provider, venue, category, query_date, stop=lambda: self._board_token is not token
-                ):
+                for event in iter_board(provider, venue, category, query_date, stop=stop):
                     events.put(event)
-                events.put({"type": "done"})
+                if locked:
+                    events.put({"type": "error", "error": self.page_lock_reason() or "開搶前後暫停查表"})
+                else:
+                    events.put({"type": "done"})
             except Exception as exc:
                 events.put({"type": "error", "error": str(exc)})
             finally:
@@ -453,11 +537,24 @@ class AccountWorker:
             self._board_token = None
 
     def courts(self, venue: Venue, category: str) -> dict:
-        courts = self.call(lambda provider: provider.list_courts(venue, category), timeout=60)
-        return {"venue": venue.id, "category": category, "courts": [court_public(court) for court in courts]}
+        def run(provider: Provider) -> dict:
+            self._ensure_page_free()
+            courts = provider.list_courts(venue, category)
+            return {"venue": venue.id, "category": category, "courts": [court_public(court) for court in courts]}
+
+        return self.call(run, timeout=60)
 
     def grab(self, venue: Venue, category: str, court_id: str, query_date: str, slot: Slot) -> dict:
         def run(provider: Provider) -> dict:
+            self._ensure_page_free()
+            _start, _end, hours = slot_bounds(slot.time)
+            held = provider.cached_holds(venue.id, category, query_date)
+            if held is None:
+                held = provider.my_bookings(venue, category, query_date)
+            self._ensure_page_free()
+            reason = quota_reason(venue.rules, held, court_id, hours)
+            if reason:
+                raise ProviderError(reason)
             court = provider.find_court(venue, category, court_id)
             result = grab(provider, venue, court, query_date, slot)
             self._publish_grab(
@@ -470,7 +567,11 @@ class AccountWorker:
         return self.call(run, timeout=90)
 
     def press(self, label: str) -> dict:
-        return self.call(lambda provider: public_snapshot(provider.press(label)), timeout=60)
+        def run(provider: Provider) -> dict:
+            self._ensure_page_free()
+            return public_snapshot(provider.press(label))
+
+        return self.call(run, timeout=60)
 
     # ---- jobs (mutated on the browser thread so ticks never see half-updated state) ----
 
@@ -482,20 +583,17 @@ class AccountWorker:
 
     def set_watch(self, venue: Venue | None, spec: dict | None) -> dict:
         def run(_provider: Provider) -> dict:
+            store = WatchStore(self.account.id)
             if venue is None or spec is None:
                 if self.watch:
                     self.watch.running = False
                     self.watch.log.note("已停止盯場")
+                store.clear()
             else:
-                self.watch = WatchJob(
-                    venue,
-                    spec,
-                    self._record_grab,
-                    self._alert,
-                    self.events,
-                    on_logout=self._logged_out,
-                    account_id=self.account.id,
-                )
+                saved = {key: value for key, value in spec.items() if value is not None}
+                saved["venue"] = venue.id
+                self.watch = self._new_watch(venue, saved)
+                store.save(saved)
             return self.watch_state()
 
         return self.call(run)

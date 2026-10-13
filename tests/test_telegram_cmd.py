@@ -10,6 +10,7 @@ from sportflex.runtime.telegram_cmd import (
     parse_book_tokens,
     parse_slots_args,
     parse_snipe_tokens,
+    parse_watch_args,
     parse_window,
     resolve_date,
 )
@@ -57,6 +58,20 @@ def test_snipe_and_book_tokens():
     assert parse_book_tokens(["明天", "19:00", "羽球場_A"], TODAY) == ("2026-10-14", "19:00", "羽球場_A")
     with pytest.raises(ValueError):
         parse_book_tokens(["19:00"], TODAY)
+
+
+def test_watch_args():
+    assert parse_watch_args(["off"], TODAY) == {"stop": True}
+    assert parse_watch_args(["明天", "晚上"], TODAY) == {
+        "stop": False,
+        "date": "2026-10-14",
+        "timeFrom": "18:00",
+        "timeTo": "23:00",
+        "court": "",
+    }
+    assert parse_watch_args(["10/20", "19:00", "羽球場_A"], TODAY)["court"] == "羽球場_A"
+    with pytest.raises(ValueError, match="日期"):
+        parse_watch_args(["晚上"], TODAY)
 
 
 def test_court_matching():
