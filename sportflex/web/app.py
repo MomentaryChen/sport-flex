@@ -155,9 +155,10 @@ def board(
     account: str | None = None,
     category: str | None = None,
     date: str = "",
+    fresh: bool = False,
 ):
     found, worker = pool(request).resolve(venue, account)
-    return {"ok": True, **worker.board(found, category or found.categories[0], date)}
+    return {"ok": True, **worker.board(found, category or found.categories[0], date, fresh=fresh)}
 
 
 _QUEUE_EMPTY = object()
@@ -177,10 +178,15 @@ async def board_stream(
     account: str | None = None,
     category: str | None = None,
     date: str = "",
+    fresh: bool = False,
 ):
-    """Server-sent events: one court as soon as its slots are known, then the rest."""
+    """Server-sent events: one court as soon as its slots are known, then the rest.
+
+    The same venue, account, sport, and date is served from a 30s cache.
+    ``fresh=1`` (the reload button) scans the venue again.
+    """
     found, worker = pool(request).resolve(venue, account)
-    events, token = worker.stream_board(found, category or found.categories[0], date)
+    events, token = worker.stream_board(found, category or found.categories[0], date, fresh=fresh)
 
     async def generate():
         try:
