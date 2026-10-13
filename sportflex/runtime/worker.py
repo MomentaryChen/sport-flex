@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import copy
 import queue
 import threading
 import time
@@ -12,7 +13,6 @@ from sportflex.core.engine import (
     SnipeJob,
     WatchJob,
     announce_grab,
-    build_board,
     court_public,
     grab,
     iter_board,
@@ -34,8 +34,35 @@ MAX_PROMPTS = 3  # unanswered captchas before going quiet until /login
 CAPTCHA_RETRY_SEC = 60  # fetching the captcha failed: try again this soon
 PAY_REMIND_SEC = 5 * 60  # still unpaid this long after the order: remind once
 DEFAULT_PAY_TIMEOUT_SEC = 590  # the site's OnlinePaymentTimeoutSeconds, when the lookup failed
+BOARD_CACHE_SEC = 30  # reuse one venue/sport/date browse; the page reload button asks for a fresh scan
 RELOGIN_HINT = "驗證碼圖片會另外傳到 Telegram，直接回覆就能重新登入。"
 _BUSY_SNIPE_PHASES = frozenset({"firing", "preparing", "ready"})
+
+
+def _board_complete(events: list[dict]) -> bool:
+    """True when every court announced in the meta event was actually loaded."""
+    expected = None
+    got = 0
+    for event in events:
+        kind = event.get("type")
+        if kind == "meta":
+            expected = len(event.get("courts") or [])
+        elif kind == "court":
+            got += 1
+    return expected is not None and got == expected
+
+
+def _board_payload(venue_id: str, category: str, events: list[dict], query_date: str = "") -> dict:
+    groups = []
+    window = {"start": "", "end": "", "date": query_date}
+    for event in events:
+        kind = event.get("type")
+        if kind == "meta":
+            window = event["window"]
+        elif kind == "court":
+            groups.append(event["court"])
+            window = event["window"]
+    return {"venue": venue_id, "category": category, "window": window, "courts": groups}
 
 
 class AccountWorker:
@@ -73,6 +100,8 @@ class AccountWorker:
         self._gave_up = False
         self._checked_at = time.time()
         self._board_token = None  # newest timetable scan; an older one stops between courts
+        self._board_cache: dict[tuple[str, str, str], tuple[float, list[dict]]] = {}
+        self._board_lock = threading.Lock()
         self._queue: queue.Queue = queue.Queue()
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name=f"sportflex-{account.id}", daemon=True)
@@ -414,16 +443,36 @@ class AccountWorker:
 
     # ---- browsing and booking -----------------------------------------
 
-    def board(self, venue: Venue, category: str, query_date: str) -> dict:
-        return self.call(lambda provider: build_board(provider, venue, category, query_date), timeout=90)
+    def board(self, venue: Venue, category: str, query_date: str, *, fresh: bool = False) -> dict:
+        if not fresh:
+            cached = self._lookup_board(venue.id, category, query_date)
+            if cached is not None:
+                return _board_payload(venue.id, category, cached[1], query_date)
+        return self.call(
+            lambda provider: _board_payload(
+                venue.id,
+                category,
+                list(self._scan_board(provider, venue, category, query_date)),
+                query_date,
+            ),
+            timeout=90,
+        )
 
-    def stream_board(self, venue: Venue, category: str, query_date: str):
+    def stream_board(self, venue: Venue, category: str, query_date: str, *, fresh: bool = False):
         """Start a timetable scan on the browser thread. Returns ``(queue, token)``.
 
         The queue receives iter_board events, then ``{"type": "done"}`` or
         ``{"type": "error", "error"}``, then None. A newer scan replaces the token and
         the previous scan stops between courts.
+
+        A finished scan is reused for ``BOARD_CACHE_SEC`` seconds. A hit replays those
+        events, prefixed with ``{"type": "cached", "ageMs"}``, and does not use the
+        browser. ``fresh=True`` is the page's reload button: scan again and replace the cache.
         """
+        if not fresh:
+            cached = self._lookup_board(venue.id, category, query_date)
+            if cached is not None:
+                return self._replay_board(*cached)
         if self.startup_error:
             raise RuntimeError(f"帳號 {self.account.display} 的瀏覽器無法使用：{self.startup_error}")
         if self._stop.is_set():
@@ -434,7 +483,7 @@ class AccountWorker:
 
         def run(provider: Provider) -> None:
             try:
-                for event in iter_board(
+                for event in self._scan_board(
                     provider, venue, category, query_date, stop=lambda: self._board_token is not token
                 ):
                     events.put(event)
@@ -446,6 +495,57 @@ class AccountWorker:
 
         self._queue.put(run)
         return events, token
+
+    def _scan_board(self, provider: Provider, venue: Venue, category: str, query_date: str, stop=None):
+        """Yield one scan, then remember it when every court came back."""
+        collected: list[dict] = []
+        for event in iter_board(provider, venue, category, query_date, stop=stop):
+            collected.append(event)
+            yield event
+        if _board_complete(collected):
+            self._remember_board(venue.id, category, query_date, collected)
+
+    def _remember_board(self, venue_id: str, category: str, query_date: str, events: list[dict]) -> None:
+        now = time.monotonic()
+        dates = {query_date}
+        # The page's first load asks with a blank date; the venue answers with the real day.
+        # A specific date that the venue rewrites is not that day's timetable, so keep it separate.
+        if not query_date:
+            for event in events:
+                if event.get("type") != "court":
+                    continue
+                resolved = str((event.get("window") or {}).get("date") or "")
+                if resolved:
+                    dates.add(resolved)
+        snapshot = list(events)
+        with self._board_lock:
+            expired = [key for key, (stored_at, _events) in self._board_cache.items() if now - stored_at >= BOARD_CACHE_SEC]
+            for key in expired:
+                del self._board_cache[key]
+            for day in dates:
+                self._board_cache[(venue_id, category, day)] = (now, snapshot)
+
+    def _lookup_board(self, venue_id: str, category: str, query_date: str):
+        key = (venue_id, category, query_date)
+        now = time.monotonic()
+        with self._board_lock:
+            hit = self._board_cache.get(key)
+            if hit is None:
+                return None
+            stored_at, events = hit
+            if now - stored_at >= BOARD_CACHE_SEC:
+                del self._board_cache[key]
+                return None
+            return stored_at, copy.deepcopy(events)
+
+    def _replay_board(self, stored_at: float, events: list[dict]):
+        queued: queue.Queue = queue.Queue()
+        queued.put({"type": "cached", "ageMs": max(0, int((time.monotonic() - stored_at) * 1000))})
+        for event in events:
+            queued.put(event)
+        queued.put({"type": "done"})
+        queued.put(None)
+        return queued, object()
 
     def cancel_board(self, token) -> None:
         """Stop a scan if it is still the active one (the client went away or asked again)."""

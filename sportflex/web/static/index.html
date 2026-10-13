@@ -906,16 +906,95 @@
       }
     }
 
-    async function loadBoard() {
+    const BOARD_CACHE_MS = 30000;
+    const boardCache = new Map();
+    let boardFlight = null;
+
+    function boardCacheKey(date) {
+      return [state.venue.id, state.account, state.category, date || ""].join("\0");
+    }
+
+    function boardReady(board) {
+      if (!board || board.failed || !board.order) return false;
+      return board.order.every((court) => board.loaded && board.loaded[court.id] && board.loaded[court.id].slots);
+    }
+
+    function cachedBoard(date) {
+      const key = boardCacheKey(date);
+      const hit = boardCache.get(key);
+      if (!hit) return null;
+      if (Date.now() - hit.at >= BOARD_CACHE_MS) {
+        boardCache.delete(key);
+        return null;
+      }
+      return hit;
+    }
+
+    function rememberBoard(requestDate, ageMs) {
+      if (!boardReady(state.board)) return;
+      const at = Date.now() - (Number(ageMs) || 0);
+      if (Date.now() - at >= BOARD_CACHE_MS) return;
+      const entry = {
+        at,
+        date: state.date || requestDate || "",
+        board: structuredClone(state.board),
+      };
+      boardCache.set(boardCacheKey(requestDate), entry);
+      if (!requestDate && entry.date) boardCache.set(boardCacheKey(entry.date), entry);
+    }
+
+    function forgetBoard(date) {
+      const hit = boardCache.get(boardCacheKey(date));
+      if (!hit) return;
+      for (const [key, entry] of boardCache) {
+        if (entry === hit) boardCache.delete(key);
+      }
+    }
+
+    function showCachedBoard(entry) {
+      state.board = structuredClone(entry.board);
+      if (entry.date) state.date = entry.date;
+      const window = state.board.window || {};
+      if (window.start && window.end) renderDates(window.start, window.end, state.date || window.date || "");
+      $("boardStatus").textContent = "";
+      renderBoard();
+    }
+
+    function stopBoardFlight() {
+      ++state.boardSerial;
+      if (state.boardAbort) state.boardAbort.abort();
+      state.boardAbort = null;
+      boardFlight = null;
+    }
+
+    async function loadBoard(options = {}) {
+      const fresh = options.fresh === true;
+      const requestDate = state.date;
+      const key = boardCacheKey(requestDate);
+      if (!fresh) {
+        const hit = cachedBoard(requestDate);
+        if (hit) {
+          stopBoardFlight();
+          showCachedBoard(hit);
+          return;
+        }
+        if (boardFlight && boardFlight.key === key && boardFlight.serial === state.boardSerial) return;
+      }
+
+      if (fresh) forgetBoard(requestDate);
       const serial = ++state.boardSerial;
       if (state.boardAbort) state.boardAbort.abort();
       const abort = new AbortController();
       state.boardAbort = abort;
+      boardFlight = { key, serial };
       state.board = null;
       $("boardStatus").textContent = "";
       $("board").replaceChildren(el("div", { class: "grid-wrap" }, [1, 2, 3, 4].map(() => el("div", { class: "skeleton" }))));
+      let cacheAgeMs = 0;
       try {
-        const response = await fetch("/api/board/stream" + query({ category: state.category, date: state.date }), { signal: abort.signal });
+        const extra = { category: state.category, date: requestDate };
+        if (fresh) extra.fresh = "1";
+        const response = await fetch("/api/board/stream" + query(extra), { signal: abort.signal });
         if (!response.ok) {
           let message = "查詢失敗";
           try {
@@ -936,9 +1015,15 @@
           for (const part of parts) {
             const line = part.split("\n").filter((item) => item.startsWith("data:")).map((item) => item.slice(5).trim()).join("\n");
             if (!line || serial !== state.boardSerial) continue;
-            applyBoardEvent(JSON.parse(line));
+            const parsed = JSON.parse(line);
+            if (parsed.type === "cached") {
+              cacheAgeMs = Number(parsed.ageMs) || 0;
+              continue;
+            }
+            applyBoardEvent(parsed);
           }
         }
+        if (serial === state.boardSerial) rememberBoard(requestDate, cacheAgeMs);
       } catch (error) {
         if (error.name === "AbortError" || serial !== state.boardSerial) return;
         if (!state.board || !state.board.order.length) {
@@ -947,6 +1032,8 @@
         } else {
           toast(error.message, "error");
         }
+      } finally {
+        if (boardFlight && boardFlight.serial === serial) boardFlight = null;
       }
     }
 
@@ -1108,7 +1195,7 @@
     });
     $("venueSelect").onchange = (event) => selectVenue(event.target.value);
     $("accountSelect").onchange = (event) => selectAccount(event.target.value);
-    $("reload").onclick = loadBoard;
+    $("reload").onclick = () => loadBoard({ fresh: true });
     $("addTarget").onclick = () => {
       const rows = readTargets();
       const last = rows[rows.length - 1];
