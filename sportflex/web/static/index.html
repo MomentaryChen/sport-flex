@@ -254,6 +254,8 @@
     button.cell small { font-weight: 500; opacity: .8; font-family: var(--mono); }
     .cell.taken { background: var(--taken); color: var(--ink-3); }
     .cell.none { color: var(--line); }
+    .cell.pending { background: linear-gradient(90deg, var(--surface-2), var(--line), var(--surface-2)); background-size: 200% 100%; animation: shimmer 1.2s infinite; }
+    .board-status { min-height: 1.2em; margin: 8px 0 0; font-size: 12px; color: var(--ink-3); }
     .legend { display: flex; gap: 14px; font-size: 12px; color: var(--ink-3); margin-top: 10px; align-items: center; }
     .swatch { display: inline-block; width: 12px; height: 12px; border-radius: 4px; vertical-align: -2px; margin-right: 5px; }
     .empty { padding: 36px 16px; text-align: center; color: var(--ink-3); }
@@ -391,6 +393,7 @@
             </div>
           </div>
           <div class="dates" id="dates"></div>
+          <p id="boardStatus" class="board-status" role="status"></p>
           <div id="board"></div>
           <div class="legend">
             <span><span class="swatch" style="background:var(--accent-soft);border:1px solid var(--accent-line)"></span>可預約（點擊搶）</span>
@@ -445,7 +448,7 @@
     ];
     const state = {
       meta: null, venue: null, account: "", category: "", date: "", from: "", to: "",
-      courts: [], board: null, release: null, events: null, shownGrab: 0, snipe: null,
+      courts: [], board: null, boardAbort: null, boardSerial: 0, release: null, events: null, shownGrab: 0, snipe: null,
     };
     const $ = (id) => document.getElementById(id);
     const json = (body) => ({ method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -795,16 +798,47 @@
       return true;
     }
 
-    function renderBoard(data) {
+    function boardRows() {
+      const data = state.board;
+      const seen = new Set();
+      const rows = (data.order || []).map((court) => {
+        seen.add(court.id);
+        return data.loaded[court.id] || { ...court, pending: true };
+      });
+      Object.values(data.loaded || {}).forEach((court) => {
+        if (!seen.has(court.id)) rows.push(court);
+      });
+      return rows;
+    }
+
+    function slotCell(court, slot) {
+      if (!slot) return el("td", {}, el("span", { class: "cell none", text: "·" }));
+      if (!slot.bookable) return el("td", {}, el("span", { class: "cell taken", title: slot.status || "已被預約", text: "—" }));
+      return el("td", {}, el("button", {
+        type: "button", class: "cell", title: `搶 ${court.name} ${slot.time}`,
+        onclick: () => grab(court, slot),
+      }, [el("span", { text: "搶" }), el("small", { text: `$${slot.price}` })]));
+    }
+
+    function renderBoard() {
       const board = $("board");
-      if (!data.courts.length) {
+      const status = $("boardStatus");
+      const data = state.board;
+      if (!data || !data.order.length) {
+        status.textContent = "";
         board.replaceChildren(el("div", { class: "empty", text: `${state.category}沒有可查的場地` }));
         return;
       }
-      const starts = [...new Set(data.courts.flatMap((court) => court.slots.map((slot) => slot.time.split("-")[0].trim())))]
+      const rows = boardRows();
+      const loaded = rows.filter((court) => !court.pending);
+      const starts = [...new Set(loaded.flatMap((court) => (court.slots || []).map((slot) => slot.time.split("-")[0].trim())))]
         .filter((start) => inWindow(start))
         .sort();
-      if (!starts.length) {
+      const waiting = rows.length - loaded.length;
+      status.textContent = waiting
+        ? `已查出 ${loaded.length}/${rows.length} 面${data.failed ? "，後面的查詢中斷" : "，其餘繼續查"}`
+        : "";
+      if (!starts.length && !waiting) {
         board.replaceChildren(el("div", { class: "empty", text: "這個時段沒有資料" }));
         return;
       }
@@ -812,7 +846,19 @@
         el("th", { class: "court-col", text: "場地" }),
         ...starts.map((start) => el("th", { text: start })),
       ]);
-      const rows = data.courts.map((court) => {
+      const body = rows.map((court) => {
+        if (court.pending || !court.slots) {
+          const label = data.failed ? "查詢中斷" : "查詢中";
+          return el("tr", {}, [
+            el("th", { class: "court-col" }, [
+              el("div", { class: "court-name", text: court.name }),
+              el("div", { class: "court-meta", text: label }),
+            ]),
+            ...(starts.length
+              ? starts.map(() => el("td", {}, el("span", { class: "cell pending", text: "" })))
+              : [el("td", {}, el("span", { class: "court-meta", text: label }))]),
+          ]);
+        }
         const byStart = Object.fromEntries(court.slots.map((slot) => [slot.time.split("-")[0].trim(), slot]));
         const open = court.slots.filter((slot) => slot.bookable && inWindow(slot.time)).length;
         return el("tr", {}, [
@@ -820,30 +866,87 @@
             el("div", { class: "court-name", text: court.name }),
             el("div", { class: "court-meta", text: open ? `${open} 個空檔` : "已滿" }),
           ]),
-          ...starts.map((start) => {
-            const slot = byStart[start];
-            if (!slot) return el("td", {}, el("span", { class: "cell none", text: "·" }));
-            if (!slot.bookable) return el("td", {}, el("span", { class: "cell taken", title: slot.status || "已被預約", text: "—" }));
-            return el("td", {}, el("button", {
-              type: "button", class: "cell", title: `搶 ${court.name} ${slot.time}`,
-              onclick: () => grab(court, slot),
-            }, [el("span", { text: "搶" }), el("small", { text: `$${slot.price}` })]));
-          }),
+          ...(starts.length
+            ? starts.map((start) => slotCell(court, byStart[start]))
+            : [el("td")]),
         ]);
       });
-      board.replaceChildren(el("div", { class: "grid-wrap" }, el("table", { class: "grid" }, [el("thead", {}, head), el("tbody", {}, rows)])));
+      board.replaceChildren(el("div", { class: "grid-wrap" }, el("table", { class: "grid" }, [el("thead", {}, head), el("tbody", {}, body)])));
+    }
+
+    function applyBoardEvent(event) {
+      if (event.type === "meta") {
+        state.board = { window: event.window, order: event.courts || [], loaded: {}, failed: false, windowKey: "" };
+        renderBoard();
+        return;
+      }
+      if (event.type === "court") {
+        if (!state.board) state.board = { window: event.window, order: [], loaded: {}, failed: false, windowKey: "" };
+        state.board.window = event.window;
+        state.board.loaded[event.court.id] = event.court;
+        if (!state.board.order.some((court) => court.id === event.court.id)) state.board.order.push(event.court);
+        if (event.window.date) state.date = event.window.date;
+        const key = `${event.window.start}|${event.window.end}|${event.window.date}`;
+        if (event.window.start && key !== state.board.windowKey) {
+          state.board.windowKey = key;
+          renderDates(event.window.start, event.window.end, state.date);
+        }
+        renderBoard();
+        return;
+      }
+      if (event.type === "error") {
+        toast(event.error, "error");
+        if (!state.board) {
+          $("boardStatus").textContent = "";
+          $("board").replaceChildren(el("div", { class: "empty", text: event.error }));
+          return;
+        }
+        state.board.failed = true;
+        renderBoard();
+      }
     }
 
     async function loadBoard() {
+      const serial = ++state.boardSerial;
+      if (state.boardAbort) state.boardAbort.abort();
+      const abort = new AbortController();
+      state.boardAbort = abort;
+      state.board = null;
+      $("boardStatus").textContent = "";
       $("board").replaceChildren(el("div", { class: "grid-wrap" }, [1, 2, 3, 4].map(() => el("div", { class: "skeleton" }))));
       try {
-        const data = await api("/api/board" + query({ category: state.category, date: state.date }));
-        state.date = data.window.date || state.date;
-        state.board = data;
-        renderDates(data.window.start, data.window.end, state.date);
-        renderBoard(data);
+        const response = await fetch("/api/board/stream" + query({ category: state.category, date: state.date }), { signal: abort.signal });
+        if (!response.ok) {
+          let message = "查詢失敗";
+          try {
+            const data = await response.json();
+            message = data.error || message;
+          } catch { /* not JSON */ }
+          throw new Error(message);
+        }
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        while (serial === state.boardSerial) {
+          const chunk = await reader.read();
+          if (chunk.done) break;
+          buffer += decoder.decode(chunk.value, { stream: true });
+          const parts = buffer.split("\n\n");
+          buffer = parts.pop();
+          for (const part of parts) {
+            const line = part.split("\n").filter((item) => item.startsWith("data:")).map((item) => item.slice(5).trim()).join("\n");
+            if (!line || serial !== state.boardSerial) continue;
+            applyBoardEvent(JSON.parse(line));
+          }
+        }
       } catch (error) {
-        $("board").replaceChildren(el("div", { class: "empty", text: error.message }));
+        if (error.name === "AbortError" || serial !== state.boardSerial) return;
+        if (!state.board || !state.board.order.length) {
+          $("boardStatus").textContent = "";
+          $("board").replaceChildren(el("div", { class: "empty", text: error.message }));
+        } else {
+          toast(error.message, "error");
+        }
       }
     }
 
@@ -1000,7 +1103,7 @@
         button.classList.add("active");
         state.from = button.dataset.from;
         state.to = button.dataset.to;
-        if (state.board) renderBoard(state.board);
+        if (state.board) renderBoard();
       };
     });
     $("venueSelect").onchange = (event) => selectVenue(event.target.value);

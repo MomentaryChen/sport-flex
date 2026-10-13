@@ -64,22 +64,61 @@ def _sink(events: EventStore, account: str, venue: str, job: str) -> Sink:
     return write
 
 
-def build_board(provider: Provider, venue: Venue, category: str, query_date: str) -> dict:
-    """Every court of a sport with its slots for one day."""
+def iter_board(provider: Provider, venue: Venue, category: str, query_date: str, stop=None):
+    """Yield each court's slots as soon as that court's availability call returns.
+
+    Events are ``{"type": "meta", "window", "courts"}`` once the court list is known, then
+    ``{"type": "court", "window", "court"}`` per court. ``stop()`` is checked before the list
+    and between courts, including during the rate-limit pause, so a newer query can take over.
+    """
+    if stop and stop():
+        return
     courts = provider.list_courts(venue, category)
-    groups = []
+    if stop and stop():
+        return
     window = {"start": "", "end": "", "date": query_date}
+    yield {"type": "meta", "window": window, "courts": [court_public(court) for court in courts]}
     pause = venue.rules.api_pause_sec
     for index, court in enumerate(courts):
-        if index and pause > 0:
-            time.sleep(pause)
+        if stop and stop():
+            return
+        if index and pause > 0 and not _pause(pause, stop):
+            return
         availability = provider.availability(court, query_date)
         window = {
             "start": availability.window_start,
             "end": availability.window_end,
             "date": availability.query_date or query_date,
         }
-        groups.append({**court_public(court), "slots": [asdict(slot) for slot in availability.slots]})
+        yield {
+            "type": "court",
+            "window": window,
+            "court": {**court_public(court), "slots": [asdict(slot) for slot in availability.slots]},
+        }
+
+
+def _pause(seconds: float, stop) -> bool:
+    """Wait out the rate-limit gap. Returns False when ``stop`` asks this scan to quit."""
+    deadline = time.monotonic() + seconds
+    while True:
+        if stop and stop():
+            return False
+        left = deadline - time.monotonic()
+        if left <= 0:
+            return True
+        time.sleep(min(0.2, left))
+
+
+def build_board(provider: Provider, venue: Venue, category: str, query_date: str) -> dict:
+    """Every court of a sport with its slots for one day."""
+    groups = []
+    window = {"start": "", "end": "", "date": query_date}
+    for event in iter_board(provider, venue, category, query_date):
+        if event["type"] == "meta":
+            window = event["window"]
+        elif event["type"] == "court":
+            groups.append(event["court"])
+            window = event["window"]
     return {"venue": venue.id, "category": category, "window": window, "courts": groups}
 
 
