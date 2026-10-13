@@ -1,12 +1,24 @@
 from __future__ import annotations
 
 import threading
+from datetime import datetime
 
 from sportflex.core.accounts import load_accounts, load_env, pick_account
 from sportflex.core.events import EventStore
+from sportflex.core.models import Slot
 from sportflex.core.notify import Notifier, default_notifier
 from sportflex.core.venue import Venue, get_venue, load_venues
 from sportflex.runtime.telegram_bot import TelegramBot
+from sportflex.runtime.telegram_cmd import (
+    filter_courts,
+    format_courts,
+    format_grab,
+    format_release,
+    format_runs,
+    format_slots,
+    format_snipe,
+    match_court,
+)
 from sportflex.runtime.worker import AccountWorker
 
 
@@ -49,7 +61,7 @@ class WorkerPool:
                 print(f"帳號 {worker.account.display} 啟動失敗：{worker.startup_error}", flush=True)
         if self.bot:
             self.bot.start(self)
-            print("Telegram 重新登入已啟用：登入失效時會傳驗證碼過去", flush=True)
+            print("Telegram 已啟用：登入失效會傳驗證碼，也可傳 /help 查時段、搶訂、訂場", flush=True)
 
     def stop(self) -> None:
         if self.bot:
@@ -92,12 +104,191 @@ class WorkerPool:
         lines = []
         for worker in self.workers.values():
             state = "瀏覽器無法使用" if worker.startup_error else "已登入" if worker.session.get("loggedIn") else "未登入"
-            armed = [job.state()["release"]["targetLabel"] for job in worker.snipes.values() if job.active]
-            lines.append(f"{worker.account.id}（{worker.account.display}）：{state}" + (f"，搶訂 {'、'.join(armed)}" if armed else ""))
+            armed = [_armed_label(job.state()) for job in worker.snipes.values() if job.active]
+            extra = f"，搶訂 {'、'.join(armed)}" if armed else ""
+            lines.append(f"{worker.account.id}（{worker.account.display}）：{state}{extra}")
         return "\n".join(lines) or "沒有帳號"
+
+    def venues_public(self) -> list[dict]:
+        return [{"id": venue.id, "name": venue.name} for venue in self.venues.values()]
+
+    def categories(self, venue_id: str | None) -> list[str]:
+        return list(self._venue(venue_id).categories)
+
+    def today(self, venue_id: str | None):
+        return datetime.now(self._venue(venue_id).rules.tz).date()
+
+    def release_text(self, venue_id: str | None = None) -> str:
+        return format_release(self._venue(venue_id))
+
+    def courts_text(self, account_id: str | None, venue_id: str | None, category: str | None) -> str:
+        venue, worker, category = self._target(account_id, venue_id, category)
+        data = worker.courts(venue, category)
+        return format_courts(venue.name, category, data["courts"])
+
+    def slots_text(
+        self,
+        account_id: str | None,
+        venue_id: str | None,
+        category: str | None,
+        query_date: str,
+        time_from: str,
+        time_to: str,
+    ) -> str:
+        venue, worker, category = self._target(account_id, venue_id, category)
+        board = worker.board(venue, category, query_date)
+        return format_slots(venue.name, board, time_from, time_to)
+
+    def snipe_text(self, account_id: str | None, venue_id: str | None) -> str:
+        venue, worker, _category = self._target(account_id, venue_id, None)
+        return format_snipe(venue.name, worker.snipes[venue.id].state())
+
+    def arm_text(self, account_id: str | None, venue_id: str | None, category: str | None, targets: list[dict]) -> str:
+        venue, worker, category = self._target(account_id, venue_id, category)
+        resolved = self._resolve_targets(worker, venue, category, targets)
+        state = worker.set_snipe(venue, category, resolved)
+        return format_snipe(venue.name, state)
+
+    def cancel_text(self, account_id: str | None, venue_id: str | None) -> str:
+        venue, worker, _category = self._target(account_id, venue_id, None)
+        job = worker.snipes[venue.id]
+        if not job.spec:
+            return format_snipe(venue.name, job.state())
+        names = "、".join(f"{item.get('name') or '任一場'} {item.get('time')}" for item in job.spec.get("targets") or [])
+        worker.set_snipe(venue, None, None)
+        return f"已取消搶訂 {venue.name}" + (f"：{names}" if names else "")
+
+    def history_text(self, account_id: str | None = None) -> str:
+        if account_id and account_id not in self.workers:
+            raise ValueError("找不到帳號 " + account_id)
+        runs = self.events.snipe_runs(account=account_id or "", days=14, limit=8)
+        return format_runs(runs)
+
+    def preview_book(
+        self,
+        account_id: str | None,
+        venue_id: str | None,
+        category: str | None,
+        court_query: str,
+        query_date: str,
+        when: str,
+    ) -> dict:
+        venue, worker, category = self._target(account_id, venue_id, category)
+        board = worker.board(venue, category, query_date)
+        window = board.get("window") or {}
+        got = window.get("date") or ""
+        if got and got != query_date:
+            raise ValueError(f"{query_date} 不在可預約範圍（{window.get('start') or '?'}～{window.get('end') or '?'}）")
+        courts = filter_courts(board.get("courts") or [], court_query)
+        if court_query and not courts:
+            raise ValueError(f"找不到球場「{court_query}」")
+        opened = [
+            (court, raw)
+            for court in courts
+            for raw in court.get("slots") or []
+            if raw.get("bookable") and str(raw.get("time") or "").split("-", 1)[0].strip() == when
+        ]
+        if not opened:
+            where = f"{query_date} {when}" + (f" {court_query}" if court_query else "")
+            raise ValueError(f"{where} 目前不能預約")
+        if len(opened) > 1:
+            names = "、".join(court["name"] for court, _raw in opened)
+            sample = opened[0][0]["name"]
+            short = query_date[5:].replace("-", "/")
+            raise ValueError(f"{when} 有多面可訂：{names}\n請指定場地，例如 /book {short} {when} {sample}")
+        court, raw = opened[0]
+        price = f"  ${raw['price']}" if raw.get("price") else ""
+        text = (
+            f"即將用「{worker.account.display}」訂 {venue.name}\n"
+            f"{court['name']}  {query_date}  {raw['time']}{price}\n"
+            "會送出訂單（訂單成立），付款要自己完成。\n"
+            "確認請傳 /ok ，放棄請傳 /no"
+        )
+        return {
+            "text": text,
+            "account": worker.account.id,
+            "venue": venue.id,
+            "category": category,
+            "courtId": court["id"],
+            "date": got or query_date,
+            "slot": {
+                "time": raw.get("time") or "",
+                "bookable": bool(raw.get("bookable")),
+                "status": raw.get("status") or "",
+                "price": raw.get("price") or "",
+                "raw": raw.get("raw") or {},
+            },
+        }
+
+    def place_book(self, plan: dict) -> str:
+        venue = self._venue(plan["venue"])
+        worker = self.workers[plan["account"]]
+        slot = plan["slot"]
+        result = worker.grab(
+            venue,
+            plan["category"],
+            plan["courtId"],
+            plan["date"],
+            Slot(
+                time=slot["time"],
+                bookable=bool(slot.get("bookable")),
+                status=slot.get("status") or "",
+                price=slot.get("price") or "",
+                raw=slot.get("raw") or {},
+            ),
+        )
+        return format_grab(result)
+
+    def _venue(self, venue_id: str | None) -> Venue:
+        if not venue_id:
+            return next(iter(self.venues.values()))
+        venue = self.venues.get(venue_id)
+        if venue is None:
+            raise ValueError("找不到場館 " + venue_id)
+        return venue
+
+    def _target(self, account_id: str | None, venue_id: str | None, category: str | None):
+        venue = self._venue(venue_id)
+        if category and category not in venue.categories:
+            raise ValueError(f"{venue.name} 沒有「{category}」。可選：" + "、".join(venue.categories))
+        return venue, self._worker(account_id, venue), category or venue.categories[0]
+
+    def _worker(self, account_id: str | None, venue: Venue) -> AccountWorker:
+        if account_id:
+            worker = self.workers.get(account_id)
+            if worker is None:
+                raise ValueError("找不到帳號 " + account_id)
+            if venue.id not in worker.snipes:
+                raise ValueError(f"帳號 {account_id} 不能訂 {venue.name}")
+            return worker
+        matching = [worker for worker in self.workers.values() if venue.id in worker.snipes]
+        if len(matching) == 1:
+            return matching[0]
+        if not matching:
+            raise ValueError(f"沒有帳號可以訂 {venue.name}")
+        raise ValueError("請在指令加上帳號：" + " | ".join(worker.account.id for worker in matching))
+
+    def _resolve_targets(self, worker: AccountWorker, venue: Venue, category: str, targets: list[dict]) -> list[dict]:
+        listed = worker.courts(venue, category)["courts"] if any(item.get("court") for item in targets) else []
+        resolved = []
+        for item in targets:
+            query = item.get("court") or ""
+            if not query:
+                resolved.append({"courtId": "", "name": "任一場", "time": item["time"]})
+                continue
+            court = match_court(listed, query)
+            resolved.append({"courtId": court["id"], "name": court["name"], "time": item["time"]})
+        return resolved
+
 
     def captcha_for(self, account_id: str) -> bytes:
         return self.workers[account_id].captcha_image()
 
     def login_with(self, account_id: str, code: str) -> dict:
         return self.workers[account_id].login(code)
+
+
+def _armed_label(state: dict) -> str:
+    targets = "、".join(f"{item.get('name') or '任一場'} {item.get('time')}" for item in state.get("targets") or [])
+    label = (state.get("release") or {}).get("targetLabel") or ""
+    return f"{label} {targets}".strip()

@@ -116,6 +116,154 @@ def test_commands():
     assert "請指定帳號" in api.texts()[-1]
     bot.handle(message("/login family"))
     assert api.photos()[-1].startswith("[family]")
+    bot.handle(message("/help"))
+    assert "/snipe" in api.texts()[-1] and "/book" in api.texts()[-1]
+
+
+class Control:
+    def __init__(self) -> None:
+        self.accounts = ["default"]
+        self.calls: list[tuple] = []
+        self.plan = {
+            "text": "即將訂 羽球場_A\n確認請傳 /ok",
+            "account": "default",
+            "venue": "xindian",
+            "category": "羽球",
+            "courtId": "A",
+            "date": "2026-10-14",
+            "slot": {"time": "19:00 - 20:00", "bookable": True, "status": "", "price": "490", "raw": {"x": 1}},
+        }
+
+    def account_ids(self):
+        return self.accounts
+
+    def venues_public(self):
+        return [{"id": "xindian", "name": "新北市新店國民運動中心"}]
+
+    def categories(self, venue_id):
+        return ["羽球", "籃球"]
+
+    def today(self, venue_id):
+        from datetime import date
+
+        return date(2026, 10, 13)
+
+    def status_text(self):
+        return "default：已登入"
+
+    def release_text(self, venue_id):
+        self.calls.append(("release", venue_id))
+        return "下一波"
+
+    def history_text(self, account_id):
+        self.calls.append(("history", account_id))
+        return "沒有紀錄"
+
+    def courts_text(self, account_id, venue_id, category):
+        self.calls.append(("courts", account_id, category))
+        return "球場"
+
+    def slots_text(self, account_id, venue_id, category, query_date, time_from, time_to):
+        self.calls.append(("slots", venue_id, category, query_date, time_from, time_to))
+        return "19:00 羽球場_A"
+
+    def snipe_text(self, account_id, venue_id):
+        self.calls.append(("snipe-state", account_id))
+        return "目前沒有搶訂"
+
+    def arm_text(self, account_id, venue_id, category, targets):
+        self.calls.append(("arm", category, targets))
+        return "已設定搶訂"
+
+    def cancel_text(self, account_id, venue_id):
+        self.calls.append(("cancel", account_id))
+        return "已取消搶訂"
+
+    def preview_book(self, account_id, venue_id, category, court, query_date, when):
+        self.calls.append(("preview", category, court, query_date, when))
+        return dict(self.plan)
+
+    def place_book(self, plan):
+        self.calls.append(("place", plan["courtId"], plan["date"], plan["slot"]["time"]))
+        return "已送出訂單"
+
+    def captcha_for(self, account_id):
+        return b"jpeg"
+
+    def login_with(self, account_id, code):
+        return {"ok": code == "1234", "message": ""}
+
+
+def control_bot():
+    api = FakeApi()
+    ctrl = Control()
+    bot = TelegramBot("token", CHAT, api=api)
+    bot.relogin = ctrl
+    bot.sync_commands = True
+    return bot, api, ctrl
+
+
+def test_slots_snipe_and_release_commands():
+    bot, api, ctrl = control_bot()
+    bot.handle(message("/slots 新店 籃球 明天 晚上"))
+    assert ctrl.calls[-1] == ("slots", "xindian", "籃球", "2026-10-14", "18:00", "23:00")
+    assert api.texts()[-1] == "19:00 羽球場_A"
+    bot.handle(message("/snipe"))
+    assert ctrl.calls[-1] == ("snipe-state", None)
+    assert "查詢中" not in api.texts()[-1]
+    bot.handle(message("/snipe A 19:00 20"))
+    assert ctrl.calls[-1] == (
+        "arm",
+        None,
+        [{"court": "A", "time": "19:00"}, {"court": "", "time": "20:00"}],
+    )
+    bot.handle(message("/release"))
+    assert ctrl.calls[-1] == ("release", None)
+    bot.handle(message("/board@SportBot 19:00"))
+    assert ctrl.calls[-1][0] == "slots" and ctrl.calls[-1][-2:] == ("19:00", "20:00")
+
+
+def test_book_waits_for_ok_and_can_be_dropped():
+    bot, api, ctrl = control_bot()
+    bot.handle(message("/book 明天 19:00 羽球場_A"))
+    assert ctrl.calls[-1][0] == "preview"
+    assert "確認請傳 /ok" in api.texts()[-1]
+    bot.handle(message("/no"))
+    assert "放棄" in api.texts()[-1]
+    bot.handle(message("/ok"))
+    assert "沒有待確認" in api.texts()[-1]
+    assert not any(call[0] == "place" for call in ctrl.calls)
+
+    bot.handle(message("/grab 10/14 19 A"))
+    bot.handle(message("/ok"))
+    assert ctrl.calls[-1] == ("place", "A", "2026-10-14", "19:00 - 20:00")
+    assert api.texts()[-1] == "已送出訂單"
+
+
+def test_book_confirm_expires():
+    bot, api, ctrl = control_bot()
+    bot.handle(message("/book 明天 19:00 A"))
+    bot._confirm["at"] -= 200
+    bot.handle(message("/ok"))
+    assert "超過 3 分鐘" in api.texts()[-1]
+    assert not any(call[0] == "place" for call in ctrl.calls)
+
+
+def test_snipe_replaces_pending_book():
+    bot, api, ctrl = control_bot()
+    bot.handle(message("/book 明天 19:00 A"))
+    bot.handle(message("/snipe 19:00"))
+    bot.handle(message("/ok"))
+    assert "沒有待確認" in api.texts()[-1] or "超過 3 分鐘" in api.texts()[-1]
+    assert not any(call[0] == "place" for call in ctrl.calls)
+
+
+def test_unknown_command_shows_help_and_bad_slots_fail():
+    bot, api, ctrl = control_bot()
+    bot.handle(message("/nope"))
+    assert "/slots" in api.texts()[-1]
+    bot.handle(message("/slots 羽球場"))
+    assert api.texts()[-1].startswith("失敗：")
 
 
 def test_skip_backlog_ignores_old_messages():

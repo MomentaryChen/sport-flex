@@ -2,16 +2,43 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 import urllib.error
 import urllib.request
 import uuid
 from typing import Callable, Protocol
 
-HELP = (
-    "登入失效時我會傳驗證碼圖片過來，直接回覆圖片上的驗證碼就會重新登入。\n"
-    "/status 看每個帳號的登入狀態\n"
-    "/login [帳號] 現在就取一張驗證碼"
+from sportflex.runtime.telegram_cmd import (
+    clip,
+    command_name,
+    parse_book_tokens,
+    parse_slots_args,
+    parse_snipe_tokens,
+    pop_known,
+    pop_venue,
 )
+
+HELP = (
+    "登入失效時我會傳驗證碼圖片過來，直接回覆圖片上的數字就會重新登入。\n"
+    "\n"
+    "/status  登入與搶訂狀態\n"
+    "/login [帳號]  重新取驗證碼\n"
+    "/release  下一波開放時間\n"
+    "/slots [日期] [時段]  可預約時段\n"
+    "/snipe 19:00 [20:00]  搶下一波（任一場）\n"
+    "/snipe A 19:00  指定場地\n"
+    "/cancel  取消搶訂\n"
+    "/book 明天 19:00 [場地]  訂已開放的時段（會再請你 /ok）\n"
+    "/courts  球場清單\n"
+    "/history  最近開搶\n"
+    "/help  本說明\n"
+    "\n"
+    "日期可寫今天、明天、後天、10/20。時段可寫上午、下午、晚上或 19:00。\n"
+    "多個帳號時，在指令裡加上帳號 id。"
+)
+
+CONFIRM_SEC = 180
+ALIASES = {"/start": "/help", "/grab": "/book", "/board": "/slots", "/stop": "/cancel"}
 
 
 class Relogin(Protocol):
@@ -27,9 +54,9 @@ class Relogin(Protocol):
 
 
 class TelegramBot:
-    """Two-way Telegram: sends captcha photos when an account is logged out and logs in with the
-    code you reply. Only messages from the configured chat are accepted. Long-polls getUpdates on
-    its own thread; Telegram allows one poller per bot token, so run one server per bot."""
+    """Two-way Telegram for one configured chat. Replies to a captcha photo log that account back
+    in, and /help lists the other commands (slots, snipe, book). Long-polls getUpdates on its own
+    thread; Telegram allows one poller per bot token, so run one server per bot."""
 
     def __init__(self, token: str, chat_id: str, api: Callable[[str, dict, dict | None], dict] | None = None) -> None:
         self.base = f"https://api.telegram.org/bot{token}/"
@@ -38,6 +65,9 @@ class TelegramBot:
         self._api = api  # injected in tests; None = real HTTP
         self._pending: dict[int, str] = {}  # captcha photo message id -> account id
         self._last_prompt: str = ""  # account of the latest captcha, for replies that don't quote it
+        self._confirm: dict | None = None  # a /book waiting for /ok
+        self._confirm_gen = 0
+        self.sync_commands = False  # tests run browser-backed commands inline
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._offset = 0
@@ -112,19 +142,130 @@ class TelegramBot:
         self._login(account_id, text)
 
     def _command(self, text: str) -> None:
-        name, _, arg = text.partition(" ")
-        name = name.split("@")[0].lower()
+        try:
+            self._dispatch(text)
+        except Exception as exc:
+            self.send_text(f"失敗：{exc}")
+
+    def _dispatch(self, text: str) -> None:
+        name, tokens = command_name(text)
+        name = ALIASES.get(name, name)
+        if name == "/help":
+            self.send_text(HELP)
+            return
         if name == "/status":
             self.send_text(self.relogin.status_text())
-        elif name == "/login":
-            accounts = self.relogin.account_ids()
-            account_id = arg.strip() or (accounts[0] if len(accounts) == 1 else "")
-            if account_id not in accounts:
-                self.send_text("請指定帳號：/login " + " | ".join(accounts))
+            return
+        if name == "/login":
+            self._drop_confirm()
+            self._login_command(" ".join(tokens))
+            return
+        if name == "/ok":
+            self._confirm_yes()
+            return
+        if name == "/no":
+            self._drop_confirm()
+            self.send_text("已放棄這次訂場")
+            return
+        if name in {"/cancel", "/book"}:
+            self._drop_confirm()
+        ctrl = self.relogin
+        venue_id, tokens = pop_venue(tokens, ctrl.venues_public())
+        account_id, tokens = pop_known(tokens, ctrl.account_ids())
+        category, tokens = pop_known(tokens, ctrl.categories(venue_id))
+        today = ctrl.today(venue_id)
+        if name == "/release":
+            self._no_extra(tokens)
+            self.send_text(ctrl.release_text(venue_id))
+        elif name == "/history":
+            self._no_extra(tokens)
+            self.send_text(ctrl.history_text(account_id))
+        elif name == "/cancel":
+            self._no_extra(tokens)
+            self._background(lambda: ctrl.cancel_text(account_id, venue_id))
+        elif name == "/courts":
+            self._no_extra(tokens)
+            self._background(lambda: ctrl.courts_text(account_id, venue_id, category))
+        elif name == "/slots":
+            query_date, time_from, time_to = parse_slots_args(tokens, today)
+            self._background(lambda: ctrl.slots_text(account_id, venue_id, category, query_date, time_from, time_to))
+        elif name == "/snipe":
+            if not tokens:
+                self.send_text(ctrl.snipe_text(account_id, venue_id))
                 return
-            self.prompt(account_id, "請回覆這張圖上的驗證碼")
+            self._drop_confirm()
+            targets = parse_snipe_tokens(tokens)
+            self._background(lambda: ctrl.arm_text(account_id, venue_id, category, targets))
+        elif name == "/book":
+            query_date, when, court = parse_book_tokens(tokens, today)
+            gen = self._confirm_gen
+
+            def preview() -> str:
+                plan = ctrl.preview_book(account_id, venue_id, category, court, query_date, when)
+                plan["at"] = time.time()
+                if not self._set_confirm(plan, gen):
+                    return "這次訂場已取消"
+                return plan["text"]
+
+            self._background(preview)
         else:
             self.send_text(HELP)
+
+    def _login_command(self, arg: str) -> None:
+        accounts = self.relogin.account_ids()
+        account_id = arg.strip() or (accounts[0] if len(accounts) == 1 else "")
+        if account_id not in accounts:
+            self.send_text("請指定帳號：/login " + " | ".join(accounts))
+            return
+        self.prompt(account_id, "請回覆這張圖上的驗證碼")
+
+    def _confirm_yes(self) -> None:
+        plan = self._take_confirm()
+        if plan is None:
+            self.send_text("沒有待確認的訂場，或已超過 3 分鐘。請重新傳 /book")
+            return
+        self._background(lambda: self.relogin.place_book(plan))
+
+    def _drop_confirm(self) -> None:
+        with self._lock:
+            self._confirm = None
+            self._confirm_gen += 1
+
+    def _set_confirm(self, plan: dict, gen: int) -> bool:
+        with self._lock:
+            if gen != self._confirm_gen:
+                return False
+            self._confirm = plan
+            return True
+
+    def _take_confirm(self) -> dict | None:
+        with self._lock:
+            plan = self._confirm
+            self._confirm = None
+        if not plan:
+            return None
+        if time.time() - plan.get("at", 0) > CONFIRM_SEC:
+            raise ValueError("確認已超過 3 分鐘，請重新傳 /book")
+        return plan
+
+    def _no_extra(self, tokens: list[str]) -> None:
+        if tokens:
+            raise ValueError("看不懂：" + " ".join(tokens))
+
+    def _background(self, work: Callable[[], str]) -> None:
+        """Browser calls can take a minute; acknowledge first so the chat is not silent."""
+        self.send_text("查詢中，稍等…")
+
+        def run() -> None:
+            try:
+                self.send_text(clip(work()))
+            except Exception as exc:
+                self.send_text(f"失敗：{exc}")
+
+        if self.sync_commands:
+            run()
+            return
+        threading.Thread(target=run, name="sportflex-telegram-cmd", daemon=True).start()
 
     def _account_for(self, message: dict) -> str:
         replied = (message.get("reply_to_message") or {}).get("message_id")
