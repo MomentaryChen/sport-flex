@@ -2,6 +2,7 @@ import time
 from datetime import timedelta
 
 from sportflex.core.engine import SnipeJob
+from sportflex.core.identity import login_prefix
 from sportflex.runtime.telegram_bot import TelegramBot
 from tests.test_engine import FakeProvider, no_disk, opens, venue  # noqa: F401  (fixtures)
 
@@ -117,7 +118,35 @@ def test_commands():
     bot.handle(message("/login family"))
     assert api.photos()[-1].startswith("[family]")
     bot.handle(message("/help"))
-    assert "/snipe" in api.texts()[-1] and "/book" in api.texts()[-1]
+    assert "/snipe" in api.texts()[-1] and "伺服器 · 帳號" in api.texts()[-1]
+
+
+def test_prompt_names_the_server():
+    api = FakeApi()
+    bot = TelegramBot("token", CHAT, api=api, instance="docker")
+    bot.relogin = FakePool(("family",))
+    bot.prompt("family", "請回覆這張圖上的驗證碼")
+    assert api.photos()[-1].startswith("[docker · family] ")
+    bot.handle(message("1234"))
+    assert api.texts()[-1] == "✅ [docker · family] 已重新登入"
+
+
+def test_reply_to_another_servers_photo_is_not_used():
+    bot, api, pool = make()
+    bot.instance = "筆電"
+    bot.ask_code("default", b"jpeg", "[筆電 · default] x")
+    bot.handle(message("1234", reply_to=999))
+    assert pool.logins == []
+    assert "不是 [筆電] 的驗證碼" in api.texts()[-1]
+    assert "[筆電 · default]" in api.texts()[-1]
+    bot.handle(message("1234", reply_to=101))
+    assert pool.logins == [("default", "1234")]
+
+
+def test_reply_without_a_prompt_says_nothing_is_waiting():
+    bot, api, pool = make()
+    bot.handle(message("1234", reply_to=5))
+    assert pool.logins == [] and "沒有等待" in api.texts()[-1]
 
 
 class Control:
@@ -357,7 +386,24 @@ def test_startup_logout_prompts_with_reason(monkeypatch):
     worker._logged_out("服務啟動時發現尚未登入")
     worker._logged_out()  # a job noticing the same logout keeps the first reason
     worker._maybe_prompt_relogin(CaptchaProvider())
-    assert bot.photos == ["[me] me 服務啟動時發現尚未登入，請回覆這張圖上的驗證碼（第 1/3 次）"]
+    assert bot.photos == [f"{login_prefix('me')} me 服務啟動時發現尚未登入，請回覆這張圖上的驗證碼（第 1/3 次）"]
+
+
+def test_relogin_caption_uses_instance_name(monkeypatch):
+    monkeypatch.setenv("SPORT_FLEX_INSTANCE", "docker")
+    worker, bot = make_worker(monkeypatch)
+    worker._logged_out("服務啟動時發現尚未登入")
+    worker._maybe_prompt_relogin(CaptchaProvider())
+    assert bot.photos == ["[docker · me] me 服務啟動時發現尚未登入，請回覆這張圖上的驗證碼（第 1/3 次）"]
+
+
+def test_web_captcha_can_skip_the_telegram_photo(monkeypatch):
+    worker, bot = make_worker(monkeypatch)
+    worker.session["loggedIn"] = False
+    worker.call = lambda fn, timeout=120: fn(CaptchaProvider())
+    image = worker.captcha_image(notify=False)
+    assert image == b"jpeg" and bot.photos == []
+    assert worker._prompts == 1  # still a new round, so the auto loop does not immediately send another
 
 
 def test_failed_captcha_does_not_use_a_try(monkeypatch):

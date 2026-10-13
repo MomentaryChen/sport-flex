@@ -465,7 +465,7 @@ def test_stream_board_emits_each_court_and_a_cancelled_scan_does_not_query():
 
     listed = []
     provider.list_courts = lambda venue, category: listed.append(category) or []
-    events, token = worker.stream_board(venue, "羽球", "2026-10-10")
+    events, token = worker.stream_board(venue, "羽球", "2026-10-10", fresh=True)
     worker.cancel_board(token)
     worker._queue.get_nowait()(provider)
     cancelled = []
@@ -521,3 +521,131 @@ def test_watch_file_restores_after_restart(tmp_path, monkeypatch):
     )
     worker._restore_watch()
     assert worker.watch and worker.watch.running and worker.watch.spec["date"] == "2026-10-20"
+
+
+def _board_worker():
+    import queue
+
+    from sportflex.core.accounts import Account
+    from sportflex.core.notify import ConsoleNotifier
+    from sportflex.runtime.worker import AccountWorker
+
+    worker = AccountWorker(
+        Account(id="me", provider="fake", username_env="U", password_env="P", profile="x"),
+        {},
+        ConsoleNotifier(),
+    )
+    provider = FakeProvider(released_date="2026-10-10")
+    calls = {"list": 0, "slots": 0}
+    original_list = provider.list_courts
+    original_slots = provider.availability
+
+    def list_courts(venue, category):
+        calls["list"] += 1
+        return original_list(venue, category)
+
+    def availability(court, query_date=""):
+        calls["slots"] += 1
+        return original_slots(court, query_date)
+
+    provider.list_courts = list_courts
+    provider.availability = availability
+
+    def play(events):
+        try:
+            job = worker._queue.get_nowait()
+        except queue.Empty:
+            job = None
+        if job:
+            job(provider)
+        items = []
+        while True:
+            item = events.get_nowait()
+            if item is None:
+                break
+            items.append(item)
+        return items
+
+    return worker, _fast_venue(), provider, calls, play
+
+
+def test_same_board_query_is_reused_for_30_seconds():
+    from sportflex.runtime.worker import BOARD_CACHE_SEC
+
+    worker, venue, provider, calls, play = _board_worker()
+    first = play(worker.stream_board(venue, "羽球", "2026-10-10")[0])
+    assert [item["type"] for item in first] == ["meta", "court", "court", "done"]
+    assert calls == {"list": 1, "slots": 2}
+
+    active = worker._board_token
+    cached_events, cached_token = worker.stream_board(venue, "羽球", "2026-10-10")
+    assert worker._queue.empty()
+    assert worker._board_token is active
+    assert cached_token is not active
+    second = play(cached_events)
+    assert [item["type"] for item in second] == ["cached", "meta", "court", "court", "done"]
+    assert second[0]["ageMs"] < 1000
+    assert calls == {"list": 1, "slots": 2}
+
+    provider.open = {"A": ["09:00"]}
+    refreshed = play(worker.stream_board(venue, "羽球", "2026-10-10", fresh=True)[0])
+    assert [item["type"] for item in refreshed] == ["meta", "court", "court", "done"]
+    assert calls == {"list": 2, "slots": 4}
+    assert any(slot["bookable"] for slot in refreshed[1]["court"]["slots"])
+
+    replay = play(worker.stream_board(venue, "羽球", "2026-10-10")[0])
+    assert replay[0]["type"] == "cached"
+    assert calls == {"list": 2, "slots": 4}
+    assert any(slot["bookable"] for slot in replay[2]["court"]["slots"])
+
+    stored_at, snapshot = worker._board_cache[(venue.id, "羽球", "2026-10-10")]
+    worker._board_cache[(venue.id, "羽球", "2026-10-10")] = (stored_at - BOARD_CACHE_SEC, snapshot)
+    play(worker.stream_board(venue, "羽球", "2026-10-10")[0])
+    assert calls == {"list": 3, "slots": 6}
+
+
+def test_board_cache_also_serves_the_date_the_venue_resolved_and_board_reads_it():
+    worker, venue, provider, calls, play = _board_worker()
+    original = provider.availability
+
+    def availability(court, query_date=""):
+        return original(court, query_date or provider.released_date)
+
+    provider.availability = availability
+    items = play(worker.stream_board(venue, "羽球", "")[0])
+    assert calls["slots"] == 2
+    assert items[1]["window"]["date"] == "2026-10-10"
+
+    again = play(worker.stream_board(venue, "羽球", "2026-10-10")[0])
+    assert again[0]["type"] == "cached"
+    assert calls["slots"] == 2
+
+    payload = worker.board(venue, "羽球", "2026-10-10")
+    assert worker._queue.empty()
+    assert [court["id"] for court in payload["courts"]] == ["A", "B"]
+    assert payload["window"]["date"] == "2026-10-10"
+    assert calls["slots"] == 2
+
+    other = play(worker.stream_board(venue, "羽球", "2026-10-11")[0])
+    assert other[0]["type"] == "meta"
+    assert calls["slots"] == 4
+
+
+def test_failed_or_cancelled_board_scan_is_not_cached():
+    worker, venue, provider, calls, play = _board_worker()
+    provider.throttle = True
+    failed = play(worker.stream_board(venue, "羽球", "2026-10-10")[0])
+    assert [item["type"] for item in failed] == ["meta", "error"]
+    assert worker._board_cache == {}
+    assert calls == {"list": 1, "slots": 1}
+
+    provider.throttle = False
+    events, token = worker.stream_board(venue, "羽球", "2026-10-10")
+    worker.cancel_board(token)
+    cancelled = play(events)
+    assert cancelled == [{"type": "done"}]
+    assert worker._board_cache == {}
+    assert calls == {"list": 1, "slots": 1}
+
+    play(worker.stream_board(venue, "羽球", "2026-10-10")[0])
+    assert calls == {"list": 2, "slots": 3}

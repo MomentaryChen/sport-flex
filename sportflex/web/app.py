@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import queue
 import socket
 import threading
@@ -18,6 +19,7 @@ from sportflex.core.models import Slot
 from sportflex.core.rules import next_release
 from sportflex.core.venue import get_venue
 from sportflex.providers.base import ProviderError
+from sportflex.core.identity import server_label
 from sportflex.runtime.pool import WorkerPool
 
 INDEX = Path(__file__).resolve().parent / "static" / "index.html"
@@ -155,9 +157,10 @@ def board(
     account: str | None = None,
     category: str | None = None,
     date: str = "",
+    fresh: bool = False,
 ):
     found, worker = pool(request).resolve(venue, account)
-    return {"ok": True, **worker.board(found, category or found.categories[0], date)}
+    return {"ok": True, **worker.board(found, category or found.categories[0], date, fresh=fresh)}
 
 
 _QUEUE_EMPTY = object()
@@ -177,10 +180,15 @@ async def board_stream(
     account: str | None = None,
     category: str | None = None,
     date: str = "",
+    fresh: bool = False,
 ):
-    """Server-sent events: one court as soon as its slots are known, then the rest."""
+    """Server-sent events: one court as soon as its slots are known, then the rest.
+
+    The same venue, account, sport, and date is served from a 30s cache.
+    ``fresh=1`` (the reload button) scans the venue again.
+    """
     found, worker = pool(request).resolve(venue, account)
-    events, token = worker.stream_board(found, category or found.categories[0], date)
+    events, token = worker.stream_board(found, category or found.categories[0], date, fresh=fresh)
 
     async def generate():
         try:
@@ -299,8 +307,13 @@ async def events(request: Request, venue: str | None = None, account: str | None
 def serve(port: int = 8765, host: str = "127.0.0.1", open_browser: bool = True) -> None:
     import uvicorn
 
+    # Before workers start, so Telegram captchas and /status use this name.
+    os.environ.setdefault("SPORT_FLEX_INSTANCE", f"{socket.gethostname()}:{port}")
     url = f"http://127.0.0.1:{port}/"
-    print(f"搶場服務聽在 {host}:{port}（本機開啟 {url}，API 文件：{url}docs）", flush=True)
+    print(
+        f"搶場服務聽在 {host}:{port}（本機開啟 {url}，API 文件：{url}docs，Telegram 這台是 {server_label()}）",
+        flush=True,
+    )
     if open_browser:
         threading.Thread(target=_open_when_up, args=(port, url), daemon=True).start()
 

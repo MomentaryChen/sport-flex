@@ -81,6 +81,13 @@ def test_slots_and_release(pool):
     assert "新北市新店" in pool.release_text("xindian")
 
 
+def test_status_names_this_server(pool, monkeypatch):
+    monkeypatch.setenv("SPORT_FLEX_INSTANCE", "docker")
+    text = pool.status_text()
+    assert text.startswith("這台：docker")
+    assert pool.meta()["instance"] == "docker"
+
+
 def test_arm_cancel_and_status(pool):
     text = pool.arm_text(None, None, None, [{"court": "", "time": "19:00"}, {"court": "A", "time": "20:00"}])
     assert "任一場 19:00" in text and "羽球場_A 20:00" in text
