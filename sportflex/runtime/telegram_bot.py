@@ -8,6 +8,7 @@ import urllib.request
 import uuid
 from typing import Callable, Protocol
 
+from sportflex.core.identity import login_prefix
 from sportflex.runtime.telegram_cmd import (
     clip,
     command_name,
@@ -19,7 +20,9 @@ from sportflex.runtime.telegram_cmd import (
 )
 
 HELP = (
-    "登入失效時我會傳驗證碼圖片過來，直接回覆圖片上的數字就會重新登入。\n"
+    "登入失效時我會傳驗證碼圖片過來，直接回覆那張圖片上的數字就會重新登入。\n"
+    "圖片開頭是 [伺服器 · 帳號]。本機、Docker 或多個帳號同時要登入時，回覆對應的那一張。\n"
+    "伺服器名稱可用 SPORT_FLEX_INSTANCE 自訂（例如 docker、筆電）。\n"
     "\n"
     "/status  登入與搶訂狀態\n"
     "/login [帳號]  重新取驗證碼\n"
@@ -58,9 +61,16 @@ class TelegramBot:
     in, and /help lists the other commands (slots, snipe, book). Long-polls getUpdates on its own
     thread; Telegram allows one poller per bot token, so run one server per bot."""
 
-    def __init__(self, token: str, chat_id: str, api: Callable[[str, dict, dict | None], dict] | None = None) -> None:
+    def __init__(
+        self,
+        token: str,
+        chat_id: str,
+        api: Callable[[str, dict, dict | None], dict] | None = None,
+        instance: str = "",
+    ) -> None:
         self.base = f"https://api.telegram.org/bot{token}/"
         self.chat_id = str(chat_id)
+        self.instance = instance  # shown on captchas so several servers in one chat stay distinct
         self.relogin: Relogin | None = None
         self._api = api  # injected in tests; None = real HTTP
         self._pending: dict[int, str] = {}  # captcha photo message id -> account id
@@ -136,6 +146,9 @@ class TelegramBot:
             self._command(text)
             return
         account_id = self._account_for(message)
+        if account_id is None:
+            self._foreign_reply()
+            return
         if not account_id:
             self.send_text("目前沒有等待輸入的驗證碼。要重新登入請傳 /login")
             return
@@ -267,12 +280,30 @@ class TelegramBot:
             return
         threading.Thread(target=run, name="sportflex-telegram-cmd", daemon=True).start()
 
-    def _account_for(self, message: dict) -> str:
+    def _account_for(self, message: dict) -> str | None:
+        """Account this code belongs to.
+
+        A reply to a captcha we sent uses that account. A reply to some other message
+        (another server's captcha) is None, so we never type that code into this server.
+        A bare code uses the latest captcha this server sent, or "" when there is none.
+        """
         replied = (message.get("reply_to_message") or {}).get("message_id")
         with self._lock:
-            if replied in self._pending:
+            if replied and replied in self._pending:
                 return self._pending[replied]
+            if replied:
+                return None
             return self._last_prompt
+
+    def _foreign_reply(self) -> None:
+        with self._lock:
+            waiting = list(dict.fromkeys(self._pending.values()))
+        if not waiting:
+            self.send_text("目前沒有等待輸入的驗證碼。要重新登入請傳 /login")
+            return
+        names = "、".join(login_prefix(account_id, self.instance) for account_id in waiting)
+        who = f"[{self.instance}]" if self.instance else "這台"
+        self.send_text(f"這則不是 {who} 的驗證碼。這台正在等：{names}\n請回覆對應的那張圖片。")
 
     def _login(self, account_id: str, code: str) -> None:
         result = self.relogin.login_with(account_id, code)
@@ -281,7 +312,7 @@ class TelegramBot:
                 self._pending = {mid: acc for mid, acc in self._pending.items() if acc != account_id}
                 if self._last_prompt == account_id:
                     self._last_prompt = ""
-            self.send_text(f"✅ {account_id} 已重新登入")
+            self.send_text(f"✅ {login_prefix(account_id, self.instance)} 已重新登入")
             return
         # The captcha is single-use; send a fresh one right away.
         self.prompt(account_id, f"❌ 登入失敗：{result.get('message') or '驗證碼錯誤'}\n請回覆這張新的驗證碼")
@@ -292,7 +323,7 @@ class TelegramBot:
         except Exception as exc:
             self.send_text(f"取驗證碼失敗：{exc}")
             return
-        self.ask_code(account_id, image, f"[{account_id}] {caption}")
+        self.ask_code(account_id, image, f"{login_prefix(account_id, self.instance)} {caption}")
 
     # ---- transport -----------------------------------------------------
 

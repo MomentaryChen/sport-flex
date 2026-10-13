@@ -8,6 +8,7 @@ from sportflex.core.events import EventStore
 from sportflex.core.models import Slot
 from sportflex.core.notify import Notifier, default_notifier
 from sportflex.core.venue import Venue, get_venue, load_venues
+from sportflex.core.identity import server_label
 from sportflex.runtime.telegram_bot import TelegramBot
 from sportflex.runtime.telegram_cmd import (
     filter_courts,
@@ -28,7 +29,7 @@ def bot_from_env() -> TelegramBot | None:
     token, chat_id = env.get("SPORT_FLEX_TELEGRAM_BOT_TOKEN"), env.get("SPORT_FLEX_TELEGRAM_CHAT_ID")
     if not token or not chat_id or env.get("SPORT_FLEX_TELEGRAM_RELOGIN") == "0":
         return None
-    return TelegramBot(token, chat_id)
+    return TelegramBot(token, chat_id, instance=server_label())
 
 
 class WorkerPool:
@@ -61,7 +62,10 @@ class WorkerPool:
                 print(f"帳號 {worker.account.display} 啟動失敗：{worker.startup_error}", flush=True)
         if self.bot:
             self.bot.start(self)
-            print("Telegram 已啟用：登入失效會傳驗證碼，也可傳 /help 查時段、搶訂、訂場", flush=True)
+            print(
+                f"Telegram 已啟用，這台是 {server_label()}：登入失效會傳驗證碼（圖片會標這台名稱）",
+                flush=True,
+            )
 
     def stop(self) -> None:
         if self.bot:
@@ -80,6 +84,7 @@ class WorkerPool:
 
     def meta(self) -> dict:
         return {
+            "instance": server_label(),
             "venues": [venue.public() for venue in self.venues.values()],
             "accounts": [
                 {**worker.account.public(), "ready": not worker.startup_error, "error": worker.startup_error}
@@ -101,7 +106,7 @@ class WorkerPool:
         return list(self.workers)
 
     def status_text(self) -> str:
-        lines = []
+        lines = [f"這台：{server_label()}"]
         for worker in self.workers.values():
             state = "瀏覽器無法使用" if worker.startup_error else "已登入" if worker.session.get("loggedIn") else "未登入"
             armed = [_armed_label(job.state()) for job in worker.snipes.values() if job.active]
@@ -282,7 +287,7 @@ class WorkerPool:
 
 
     def captcha_for(self, account_id: str) -> bytes:
-        return self.workers[account_id].captcha_image()
+        return self.workers[account_id].captcha_image(notify=False)
 
     def login_with(self, account_id: str, code: str) -> dict:
         return self.workers[account_id].login(code)
