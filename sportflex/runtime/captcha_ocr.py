@@ -1,9 +1,8 @@
-"""Read the Changjia login captcha, and abstain unless the guess is safe to submit.
+"""Read the Changjia login captcha and return a code to submit.
 
-The image is four letters or digits with crossing lines. A wrong submit burns that
-image, so a guess is returned only when every character is outside the pairs this
-model mixes up (4/A, 1/I, 0/O, 2/Z, 5/S, 8/B, K/X). Anything else is left for a person,
-on the same image.
+The image is four letters or digits. Every four-character read is submitted, including
+pairs this model sometimes mixes up. A read that is not four letters or digits is left
+for a person.
 """
 
 from __future__ import annotations
@@ -11,7 +10,6 @@ from __future__ import annotations
 import threading
 
 # Uppercase, because the glyphs on this captcha are capitals.
-_SAFE_CHARS = frozenset("3679CDEFGHJLMNPRTUVWXY")
 _CODE_LENGTH = 4
 _MIN_CONFIDENCE = 0.95
 
@@ -22,7 +20,7 @@ _engine = None
 def accept_read(text: str, confidence: float) -> str | None:
     """The submit/abstain rule, separate from the model so tests can call it directly."""
     code = "".join(text.split()).upper()
-    if len(code) != _CODE_LENGTH or any(char not in _SAFE_CHARS for char in code):
+    if len(code) != _CODE_LENGTH or not code.isalnum():
         return None
     if confidence < _MIN_CONFIDENCE:
         return None
