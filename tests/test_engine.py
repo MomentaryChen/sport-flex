@@ -116,6 +116,26 @@ def test_prepares_then_fires_and_stops_at_confirm(venue):
     assert grabs and grabs[0]["court"] == "場A" and grabs[0]["pressed"] == "確認預約"
 
 
+def test_new_browser_parks_on_the_reserve_page_again(venue):
+    grabs = []
+    job = armed(venue, grabs)
+    job.tick(FakeProvider(), opens(job) - timedelta(seconds=30))
+    assert job.spec["phase"] == "ready"
+
+    job.browser_replaced()
+    assert job.spec["phase"] == "armed"
+    fresh = FakeProvider()
+    job.tick(fresh, opens(job) - timedelta(seconds=20))
+    assert job.spec["phase"] == "ready" and fresh.prepared == ["A"]
+
+
+def test_new_browser_leaves_a_firing_snipe_alone(venue):
+    job = armed(venue, [])
+    job.spec["phase"] = "firing"
+    job.browser_replaced()
+    assert job.spec["phase"] == "firing"
+
+
 def test_need_login_before_release(venue):
     job = armed(venue, [])
     job.tick(FakeProvider(logged_in=False), opens(job) - timedelta(seconds=30))

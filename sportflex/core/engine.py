@@ -788,6 +788,15 @@ class SnipeJob:
                 self._offset_sec = 0.0
         return self._offset_sec
 
+    def browser_replaced(self) -> None:
+        """The worker reopened Chrome. A parked reserve page is gone, so park again before release."""
+        spec = self.spec
+        if not spec or spec["phase"] not in {"preparing", "ready"}:
+            return
+        self._prepared = False
+        spec["phase"] = "armed"
+        self.log.note("瀏覽器已重開，開搶前會重新停到預約頁", "browser_restarted")
+
     def next_action_in(self, now: datetime) -> float | None:
         """Seconds until the next thing this job must do, so the worker can wake on time."""
         spec = self.spec

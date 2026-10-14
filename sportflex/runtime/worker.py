@@ -44,6 +44,18 @@ DEFAULT_PAY_TIMEOUT_SEC = 590  # the site's OnlinePaymentTimeoutSeconds, when th
 BOARD_CACHE_SEC = 30  # reuse one venue/sport/date browse; the page reload button asks for a fresh scan
 RELOGIN_HINT = "會先嘗試自動辨識驗證碼；不行時圖片會傳到 Telegram，直接回覆就能重新登入。"
 _BUSY_SNIPE_PHASES = frozenset({"firing", "preparing", "ready"})
+BROWSER_RETRY_SEC = (5, 15, 60, 120, 300)  # waits before each reopen after Chrome dies; then give up
+BROWSER_STABLE_SEC = 10 * 60  # a browser that ran this long resets the retry count
+
+
+class _DeadProvider:
+    """Stands in for the provider once Chrome can't be reopened; every use raises."""
+
+    def __init__(self, reason: str) -> None:
+        self._reason = reason
+
+    def __getattr__(self, name: str):
+        raise RuntimeError(self._reason)
 
 
 def _board_complete(events: list[dict]) -> bool:
@@ -164,34 +176,111 @@ class AccountWorker:
             raise box["error"]
         return box.get("value")
 
+    @property
+    def healthy(self) -> bool:
+        return not self.startup_error and self._thread.is_alive()
+
     def _run(self) -> None:
-        try:
-            with open_page(self.account) as page:
-                provider = create_provider(self.account.provider, page)
-                provider.order = self.account.order_options()
-                if self.venues:
-                    provider.api_pause_sec = max(venue.rules.api_pause_sec for venue in self.venues.values())
-                self.session = provider.refresh_session()
-                if not self.session["loggedIn"]:
-                    self._event("logout_detected", "啟動時發現尚未登入", level="warn")
-                    self._logged_out("服務啟動時發現尚未登入")
-                for job in self.snipes.values():
-                    job.restore()
-                self._load_routines()
-                self._apply_routines()
-                self._restore_watch()
-                self.ready.set()
-                while not self._stop.is_set():
-                    try:
-                        job = self._queue.get(timeout=self._idle_timeout())
-                    except queue.Empty:
-                        self._tick(provider)
-                        continue
-                    job(provider)
-                    self._tick(provider)
-        except Exception as exc:
-            self.startup_error = str(exc)
-            self.ready.set()
+        """Open Chrome and serve. After a crash, reopen it on this same thread (Playwright is
+        thread-bound); jobs stay in memory. A failure before the first open is fatal as before."""
+        opened = False
+        failures = 0
+        while not self._stop.is_set():
+            served_at = time.monotonic()
+            try:
+                with open_page(self.account) as page:
+                    provider = self._open_provider(page)
+                    if opened:
+                        self._browser_recovered(failures)
+                    else:
+                        self._first_start()
+                    opened = True
+                    failures = 0
+                    self.ready.set()
+                    self._serve(page, provider)
+                return
+            except Exception as exc:
+                if not opened:
+                    self.startup_error = str(exc)
+                    self.ready.set()
+                    return
+                if self._stop.is_set():
+                    return
+                if time.monotonic() - served_at >= BROWSER_STABLE_SEC:
+                    failures = 0
+                if failures >= len(BROWSER_RETRY_SEC):
+                    self._browser_dead(exc, failures)
+                    return
+                delay = BROWSER_RETRY_SEC[failures]
+                failures += 1
+                self._browser_lost(exc, delay, failures)
+                if self._stop.wait(delay):
+                    return
+
+    def _open_provider(self, page) -> Provider:
+        provider = create_provider(self.account.provider, page)
+        provider.order = self.account.order_options()
+        if self.venues:
+            provider.api_pause_sec = max(venue.rules.api_pause_sec for venue in self.venues.values())
+        self.session = provider.refresh_session()
+        return provider
+
+    def _first_start(self) -> None:
+        if not self.session["loggedIn"]:
+            self._event("logout_detected", "啟動時發現尚未登入", level="warn")
+            self._logged_out("服務啟動時發現尚未登入")
+        for job in self.snipes.values():
+            job.restore()
+        self._load_routines()
+        self._apply_routines()
+        self._restore_watch()
+
+    def _serve(self, page, provider: Provider) -> None:
+        while not self._stop.is_set():
+            try:
+                job = self._queue.get(timeout=self._idle_timeout())
+            except queue.Empty:
+                job = None
+            if job is not None:
+                job(provider)
+            if page.is_closed():
+                raise RuntimeError("瀏覽器分頁已關閉")
+            self._tick(provider)
+
+    def _browser_lost(self, exc: Exception, delay: float, attempt: int) -> None:
+        self.session = {**self.session, "loggedIn": False}
+        self._hold_until = 0
+        self._event("browser_lost", f"瀏覽器中斷：{exc}", level="error", data={"attempt": attempt, "delay": delay})
+        self._alert(
+            "⚠️ 瀏覽器中斷",
+            f"{exc}\n{delay:g} 秒後自動重開（第 {attempt}/{len(BROWSER_RETRY_SEC)} 次），搶訂和盯場設定都還在。",
+        )
+
+    def _browser_recovered(self, failures: int) -> None:
+        for job in self.snipes.values():
+            job.browser_replaced()
+        self._board_cache.clear()
+        state = "已登入" if self.session["loggedIn"] else "尚未登入"
+        self._event("browser_restarted", f"瀏覽器已重開（{state}）", data={"attempts": failures})
+        self._alert("瀏覽器已重開", f"重開後{state}，搶訂和盯場會繼續。")
+        if not self.session["loggedIn"]:
+            self._logged_out("瀏覽器重開後尚未登入")
+
+    def _browser_dead(self, exc: Exception, failures: int) -> None:
+        self.startup_error = f"瀏覽器重開 {failures} 次都失敗：{exc}"
+        self._event("browser_dead", self.startup_error, level="error")
+        self._alert("❌ 瀏覽器無法重開", f"{self.startup_error}\n這個帳號的搶訂、盯場和付款提醒已停止，請重新啟動服務。")
+        self._fail_queued()
+
+    def _fail_queued(self) -> None:
+        """Callers already waiting on the queue get the error now instead of at their timeout."""
+        dead = _DeadProvider(self.startup_error)
+        while True:
+            try:
+                job = self._queue.get_nowait()
+            except queue.Empty:
+                return
+            job(dead)
 
     def _idle_timeout(self) -> float:
         """Wake in time for the first query and the next poll.
