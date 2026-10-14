@@ -941,3 +941,93 @@ def test_watch_targets_ignore_other_hours_and_keep_going():
     job._next_at = 0
     job.tick(provider)
     assert provider.submitted[-1][0] == "B" and not job.running
+
+
+def test_time_window_stops_after_one_grab_even_when_another_slot_is_open(venue, monkeypatch):
+    monkeypatch.setattr(engine.time, "sleep", lambda s: None)
+    provider = FakeProvider(released_date="2026-10-10")
+    provider.open = {"A": ["19:00"], "B": ["20:00"]}
+    job = WatchJob(venue, {"category": "羽球", "date": "2026-10-10", "timeFrom": "18:00", "timeTo": "22:00"}, lambda result: None)
+    job.tick(provider)
+    assert provider.submitted == [("A", "2026-10-10", "19:00 - 20:00")]
+    assert not job.running
+
+
+def test_watch_until_full_books_until_the_daily_cap():
+    venue = _fast_venue()
+    grabs = []
+    saved = []
+    alerts = []
+    provider = FakeProvider(released_date="2026-10-10")
+    provider.open = {"A": ["19:00", "21:00"], "B": ["20:00"]}
+    job = WatchJob(
+        venue,
+        {"category": "羽球", "date": "2026-10-10", "timeFrom": "18:00", "timeTo": "22:00", "untilFull": True},
+        grabs.append,
+        on_alert=lambda title, body: alerts.append((title, body)),
+        on_change=saved.append,
+    )
+    job.tick(provider)
+    assert provider.submitted == [("A", "2026-10-10", "19:00 - 20:00")]
+    assert job.running and saved[-1]["booked"][0]["courtId"] == "A"
+    assert any("繼續盯" in line for line in job.log.lines)
+    job._next_at = 0
+    job.tick(provider)
+    assert [item[0] for item in provider.submitted] == ["A", "B"]
+    assert not job.running
+    assert len(grabs) == 2
+    assert any("上限" in title for title, _body in alerts)
+    job._next_at = 0
+    job.tick(provider)
+    assert len(provider.submitted) == 2
+
+
+def test_watch_until_full_counts_hours_already_held():
+    venue = _fast_venue()
+    provider = FakeProvider(released_date="2026-10-10")
+    provider.mine = {"A": ["08:00"]}
+    provider.open = {"A": ["19:00"], "B": ["20:00"]}
+    job = WatchJob(
+        venue,
+        {"category": "羽球", "date": "2026-10-10", "timeFrom": "18:00", "untilFull": True},
+        lambda result: None,
+    )
+    job.tick(provider)
+    assert provider.submitted == [("B", "2026-10-10", "20:00 - 21:00")]
+    assert not job.running
+
+
+def test_watch_until_full_stops_when_the_day_is_already_full():
+    venue = _fast_venue()
+    alerts = []
+    provider = FakeProvider(released_date="2026-10-10")
+    provider.mine = {"A": ["08:00"], "B": ["09:00"]}
+    provider.open = {"A": ["19:00"]}
+    job = WatchJob(
+        venue,
+        {"category": "羽球", "date": "2026-10-10", "timeFrom": "18:00", "untilFull": True},
+        lambda result: None,
+        on_alert=lambda title, body: alerts.append((title, body)),
+    )
+    job.tick(provider)
+    assert provider.submitted == []
+    assert not job.running
+    assert any("上限" in title for title, _body in alerts)
+
+
+def test_watch_until_full_waits_for_a_second_court():
+    venue = _fast_venue()
+    provider = FakeProvider(released_date="2026-10-10")
+    provider.open = {"A": ["19:00", "20:00"]}
+    job = WatchJob(
+        venue,
+        {"category": "羽球", "date": "2026-10-10", "timeFrom": "18:00", "untilFull": True},
+        lambda result: None,
+    )
+    job.tick(provider)
+    assert provider.submitted == [("A", "2026-10-10", "19:00 - 20:00")]
+    assert job.running
+    job._next_at = 0
+    job.tick(provider)
+    assert provider.submitted == [("A", "2026-10-10", "19:00 - 20:00")]
+    assert job.running

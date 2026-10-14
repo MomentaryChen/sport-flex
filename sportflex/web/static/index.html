@@ -187,6 +187,11 @@
     .remove:hover { background: var(--danger-soft); color: var(--danger); }
     .add-target { margin-top: 8px; width: 100%; border-style: dashed; color: var(--ink-2); }
     .hint { font-size: 12px; color: var(--ink-3); margin: 8px 0 0; }
+    .watch-option {
+      display: flex; align-items: flex-start; gap: 8px;
+      margin: 10px 0 0; font-size: 13px; color: var(--ink-2); cursor: pointer;
+    }
+    .watch-option input { accent-color: var(--accent); width: 16px; height: 16px; margin-top: 2px; flex: 0 0 auto; }
     .weekdays { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
     #routineTargets { margin-top: 8px; }
     .wd-btn {
@@ -413,8 +418,12 @@
           <div class="divider"></div>
           <div id="watchBox">
             <div class="release-label">盯已開放的時段</div>
-            <p class="hint" id="watchHint">用右側目前的日期和上午／下午／晚上。看到空檔就送出訂單。</p>
-            <button class="btn btn-block" id="watchStart" type="button">開始盯場</button>
+            <p class="hint" id="watchHint">用右側目前的日期和上午／下午／晚上。看到空檔就送出一筆訂單，然後停止。</p>
+            <label class="watch-option" id="watchUntilFullLabel">
+              <input type="checkbox" id="watchUntilFull" />
+              <span id="watchUntilFullText">訂到當天上限才停</span>
+            </label>
+            <button class="btn btn-block" id="watchStart" type="button" style="margin-top:10px">開始盯場</button>
             <div id="watchRun" class="hidden">
               <div class="tstatus"><span id="watchStatus"></span><span class="badge">盯場中</span></div>
               <div class="log-lines" id="watchLog"></div>
@@ -652,6 +661,8 @@
       ];
       if (rules.distinct_courts) chips.push("須不同場");
       $("ruleChips").replaceChildren(...chips.map((text) => el("span", { class: "rule-chip", text })));
+      $("watchUntilFullText").textContent = `訂到當天上限（${rules.max_hours_per_day} 小時）才停`;
+      refreshWatchHint();
     }
 
     async function loadRelease() {
@@ -1299,17 +1310,45 @@
       return courts.reduce((sum, court) => sum + (court.slots || []).filter((slot) => slot.mine).reduce((inner, slot) => inner + slotHours(slot.time), 0), 0);
     }
 
+    function watchUntilFull() {
+      return !!$("watchUntilFull").checked;
+    }
+
+    function refreshWatchHint(spec) {
+      if (!state.venue) return;
+      const rules = state.venue.rules;
+      const held = heldHours();
+      const filling = spec ? !!spec.untilFull && !(spec.targets || []).length : watchUntilFull();
+      const where = "用右側目前的日期和上午／下午／晚上。";
+      const heldNote = held ? `這天你已訂 ${held} 小時（上限 ${rules.max_hours_per_day}）。` : "";
+      const mode = filling
+        ? `看到空檔就連續送出，直到這天訂滿 ${rules.max_hours_per_day} 小時才停。`
+        : "看到空檔就送出一筆訂單，然後停止。";
+      $("watchHint").textContent = [where, heldNote, mode].filter(Boolean).join("");
+    }
+
     async function startWatch() {
       if (!state.date) {
         toast("先選右側的日期", "error");
         return;
       }
+      const rules = state.venue.rules;
+      const held = heldHours();
+      const filling = watchUntilFull();
+      if (filling && held + rules.slot_hours > rules.max_hours_per_day) {
+        toast(`這天已訂 ${held} 小時，上限 ${rules.max_hours_per_day} 小時`, "error");
+        return;
+      }
       const windowText = state.from ? `${state.from}–${state.to}` : "全天";
       const who = $("accountSelect").selectedOptions[0]?.textContent || state.account;
-      if (!confirm(`用「${who}」盯 ${state.venue.name}\n${state.date} ${state.category} ${windowText}\n\n看到空檔就送出訂單，付款要自己完成。開搶前後會暫停查表，結束後繼續。`)) return;
+      const mode = filling
+        ? `看到空檔就送出訂單，直到這天訂滿 ${rules.max_hours_per_day} 小時才停。`
+        : "看到空檔就送出一筆訂單，然後停止。";
+      if (!confirm(`用「${who}」盯 ${state.venue.name}\n${state.date} ${state.category} ${windowText}\n\n${mode}付款要自己完成。開搶前後會暫停查表，結束後繼續。`)) return;
       try {
         showWatch(await api("/api/watch", json(target({
           enabled: true, category: state.category, date: state.date, timeFrom: state.from, timeTo: state.to, courtId: "",
+          untilFull: filling,
         }))));
         toast(state.locked ? "已設定盯場，開搶前後會暫停，結束後繼續" : "已開始盯場");
       } catch (error) {
@@ -1333,7 +1372,8 @@
       }
       const windowText = spec.timeFrom ? `${spec.timeFrom}–${spec.timeTo}` : "全天";
       const court = spec.courtName || (spec.courtId ? "指定場" : "任一場");
-      return [spec.date, windowText, court].filter(Boolean).join(" ");
+      const mode = spec.untilFull ? "訂滿才停" : "";
+      return [spec.date, windowText, court, mode].filter(Boolean).join(" ");
     }
 
     function showWatch(data) {
@@ -1341,15 +1381,12 @@
       state.watch = data;
       const running = !!data.running;
       $("watchStart").classList.toggle("hidden", running);
+      $("watchUntilFullLabel").classList.toggle("hidden", running);
       $("watchRun").classList.toggle("hidden", !running);
       const spec = data.spec || {};
       $("watchStatus").textContent = watchSummary(spec);
       $("watchLog").textContent = (data.log || []).slice(-4).join("\n");
-      const held = heldHours();
-      const limit = state.venue ? state.venue.rules.max_hours_per_day : "";
-      $("watchHint").textContent = held
-        ? `用右側目前的日期和時段。這天你已訂 ${held} 小時（上限 ${limit}）。`
-        : "用右側目前的日期和上午／下午／晚上。看到空檔就送出訂單。";
+      refreshWatchHint(running ? spec : null);
     }
 
     async function grab(court, slot) {
@@ -1655,6 +1692,7 @@
     $("cancelBtn").onclick = cancelSnipe;
     $("watchStart").onclick = startWatch;
     $("watchStop").onclick = stopWatch;
+    $("watchUntilFull").onchange = () => refreshWatchHint();
     $("closeModal").onclick = () => $("modal").classList.add("hidden");
     $("modal").onclick = (event) => { if (event.target === $("modal")) $("modal").classList.add("hidden"); };
     $("loadCaptcha").onclick = async () => {

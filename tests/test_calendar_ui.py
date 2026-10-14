@@ -173,6 +173,79 @@ def test_order_sheet_offers_calendar_file_and_google_link(tmp_path):
         server.shutdown()
 
 
+def test_watch_until_full_option_is_sent_with_the_watch(tmp_path):
+    playwright_api = pytest.importorskip("playwright.sync_api")
+    venue, _result = _payload()
+    server = _serve()
+    port = server.server_address[1]
+    held = []
+    watches = []
+    try:
+        with playwright_api.sync_playwright() as playwright:
+            try:
+                browser = playwright.chromium.launch(channel="chrome", headless=True)
+            except Exception as exc:
+                pytest.skip(f"Chrome not available: {exc}")
+            page = browser.new_page(viewport={"width": 1100, "height": 900}, color_scheme="light")
+            page.route("**/*", lambda route: _watch_route(route, venue, held, watches))
+            page.goto(f"http://127.0.0.1:{port}/index.html", wait_until="domcontentloaded")
+            page.wait_for_function("() => document.getElementById('venueInfo').textContent.includes('一號館')")
+            page.wait_for_selector("#dates .date")
+            box = page.locator("#watchBox")
+            box.scroll_into_view_if_needed()
+            assert "送出一筆訂單，然後停止" in page.locator("#watchHint").inner_text()
+            assert "2 小時" in page.locator("#watchUntilFullText").inner_text()
+            artifacts = Path("/opt/cursor/artifacts")
+            if artifacts.is_dir():
+                box.screenshot(path=str(artifacts / "watch-until-full-off.png"))
+
+            page.locator("#watchUntilFull").check()
+            assert "訂滿 2 小時才停" in page.locator("#watchHint").inner_text()
+            if artifacts.is_dir():
+                box.screenshot(path=str(artifacts / "watch-until-full-on.png"))
+            messages = []
+            page.once("dialog", lambda dialog: (messages.append(dialog.message), dialog.accept()))
+            with page.expect_response("**/api/watch"):
+                page.locator("#watchStart").click()
+            assert watches[-1]["untilFull"] is True
+            assert watches[-1]["date"]
+            assert "訂滿 2 小時才停" in messages[-1]
+
+            page.locator("#watchUntilFull").uncheck()
+            assert "送出一筆訂單，然後停止" in page.locator("#watchHint").inner_text()
+            page.once("dialog", lambda dialog: (messages.append(dialog.message), dialog.accept()))
+            with page.expect_response("**/api/watch"):
+                page.locator("#watchStart").click()
+            assert watches[-1]["untilFull"] is False
+            assert "送出一筆訂單，然後停止" in messages[-1]
+
+            page.set_viewport_size({"width": 390, "height": 844})
+            page.evaluate("() => document.getElementById('toasts').replaceChildren()")
+            box.scroll_into_view_if_needed()
+            page.locator("#watchUntilFull").check()
+            assert "訂滿 2 小時才停" in page.locator("#watchHint").inner_text()
+            if artifacts.is_dir():
+                box.screenshot(path=str(artifacts / "watch-until-full-mobile.png"))
+            browser.close()
+    finally:
+        for route in held:
+            try:
+                route.fulfill(status=204, body=b"")
+            except Exception:
+                pass
+        server.shutdown()
+
+
+def _watch_route(route, venue, held, watches) -> None:
+    path = urlparse(route.request.url).path
+    if path == "/api/watch" and route.request.method == "POST":
+        body = route.request.post_data_json or {}
+        watches.append(body)
+        route.fulfill(json={"ok": True, "running": False, "spec": None, "log": []})
+        return
+    _route(route, venue, held)
+
+
 def _buttons_fit(sheet) -> None:
     box = sheet.bounding_box()
     for button in sheet.locator("#resultButtons .btn").all():

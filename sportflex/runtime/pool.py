@@ -265,6 +265,7 @@ class WorkerPool:
             "timeTo": spec.get("timeTo") or "",
             "courtId": court_id,
             "courtName": court_name,
+            "untilFull": bool(spec.get("untilFull")),
         }
         state = worker.set_watch(venue, saved)
         return format_watch(venue.display_name, state)
