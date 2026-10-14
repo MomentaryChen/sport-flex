@@ -48,6 +48,18 @@ BROWSER_RETRY_SEC = (5, 15, 60, 120, 300)  # waits before each reopen after Chro
 BROWSER_STABLE_SEC = 10 * 60  # a browser that ran this long resets the retry count
 
 
+BROWSER_PROBE_SEC = 5  # idle: how often to notice that Chrome died
+
+
+def _probe(page) -> None:
+    """The sync API only learns that Chrome died while a call is running; a zero wait is the
+    cheapest call (no page round trip). Afterwards page.is_closed() tells the truth."""
+    try:
+        page.wait_for_timeout(0)
+    except Exception:
+        pass
+
+
 class _DeadProvider:
     """Stands in for the provider once Chrome can't be reopened; every use raises."""
 
@@ -236,6 +248,7 @@ class AccountWorker:
         self._restore_watch()
 
     def _serve(self, page, provider: Provider) -> None:
+        probed = time.monotonic()
         while not self._stop.is_set():
             try:
                 job = self._queue.get(timeout=self._idle_timeout())
@@ -243,8 +256,11 @@ class AccountWorker:
                 job = None
             if job is not None:
                 job(provider)
+            elif time.monotonic() - probed >= BROWSER_PROBE_SEC:
+                probed = time.monotonic()
+                _probe(page)
             if page.is_closed():
-                raise RuntimeError("瀏覽器分頁已關閉")
+                raise RuntimeError("瀏覽器已關閉")
             self._tick(provider)
 
     def _browser_lost(self, exc: Exception, delay: float, attempt: int) -> None:

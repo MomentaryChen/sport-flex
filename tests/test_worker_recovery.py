@@ -21,11 +21,19 @@ class Box:
 
 
 class FakePage:
+    """Like Playwright's sync page: a dead Chrome shows up in is_closed() only after a call."""
+
     def __init__(self) -> None:
         self.closed = False
+        self.dead = False
 
     def is_closed(self) -> bool:
         return self.closed
+
+    def wait_for_timeout(self, ms: float) -> None:
+        if self.dead:
+            self.closed = True
+            raise RuntimeError("Target page, context or browser has been closed")
 
 
 class FakeProvider:
@@ -67,6 +75,7 @@ def setup(monkeypatch, tmp_path):
         worker_module, "create_provider", lambda name, page: FakeProvider(page, len(browsers.pages))
     )
     monkeypatch.setattr(worker_module, "BROWSER_RETRY_SEC", (0.05, 0.05, 0.05))
+    monkeypatch.setattr(worker_module, "BROWSER_PROBE_SEC", 0)
     account = Account(id="me", provider="changjia", username_env="T_USER", password_env="T_PASS", profile="x")
     box = Box()
     worker = AccountWorker(account, {}, box)
@@ -105,6 +114,16 @@ def test_closed_page_reopens_browser_and_keeps_serving(setup):
     assert worker.healthy
     assert "⚠️ 瀏覽器中斷" in box.titles()
     assert "瀏覽器已重開" in box.titles()
+
+
+def test_idle_worker_notices_a_killed_chrome_without_a_request(setup):
+    worker, browsers, box = setup
+    worker.start(wait=5)
+    browsers.pages[0].dead = True
+
+    assert _wait(lambda: len(browsers.pages) == 2)
+    assert "瀏覽器已重開" in box.titles()
+    assert worker.call(lambda provider: provider.number) == 2
 
 
 def test_gives_up_after_retries_and_reports_unhealthy(setup):
