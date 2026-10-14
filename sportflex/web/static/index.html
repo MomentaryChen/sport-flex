@@ -187,6 +187,14 @@
     .remove:hover { background: var(--danger-soft); color: var(--danger); }
     .add-target { margin-top: 8px; width: 100%; border-style: dashed; color: var(--ink-2); }
     .hint { font-size: 12px; color: var(--ink-3); margin: 8px 0 0; }
+    .weekdays { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+    #routineTargets { margin-top: 8px; }
+    .wd-btn {
+      width: 36px; height: 36px; border-radius: 10px; font-weight: 700;
+      border: 1px solid var(--line); background: var(--surface); color: var(--ink-2);
+    }
+    .wd-btn.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .routine-actions { display: grid; gap: 8px; margin-top: 10px; }
 
     .stepper { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; margin: 4px 0 12px; }
     .step { text-align: center; font-size: 11px; color: var(--ink-3); }
@@ -364,7 +372,22 @@
 
           <div class="divider"></div>
 
+          <div id="routineBox">
+            <div class="release-label">每週固定時段</div>
+            <div class="weekdays" id="weekdays" role="group" aria-label="星期"></div>
+            <div class="targets" id="routineTargets"></div>
+            <button class="btn add-target" id="addRoutineTarget" type="button">＋ 再加一個時段</button>
+            <p class="hint" id="routineStatus">選星期和時段後套用。之後每天開放前會自動排上第 14 天。</p>
+            <div class="routine-actions">
+              <button class="btn btn-primary btn-block" id="routineBtn" type="button">套用每週搶訂</button>
+              <button class="btn btn-block hidden" id="routineOff" type="button">停用每週</button>
+            </div>
+          </div>
+
+          <div class="divider"></div>
+
           <div id="setupBox">
+            <div class="release-label">只搶下一波</div>
             <div class="targets" id="targets"></div>
             <button class="btn add-target" id="addTarget" type="button">＋ 再加一個目標</button>
             <p class="hint" id="targetHint"></p>
@@ -376,6 +399,7 @@
           <div id="runBox" class="hidden">
             <div class="stepper" id="stepper"></div>
             <div class="alert hidden" id="runAlert"></div>
+            <p class="hint hidden" id="runNote"></p>
             <div id="runTargets"></div>
             <button class="btn btn-danger btn-block" id="cancelBtn" type="button" style="margin-top:12px">取消搶訂</button>
           </div>
@@ -469,6 +493,7 @@
   <script>
     const ANY = "";
     const WEEK = "日一二三四五六";
+    const DAYS = "一二三四五六日";
     const PHASES = [
       { key: "armed", label: "已設定" },
       { key: "ready", label: "待命" },
@@ -478,6 +503,7 @@
     const state = {
       meta: null, venue: null, account: "", category: "", date: "", from: "", to: "",
       courts: [], board: null, boardAbort: null, boardSerial: 0, release: null, events: null, shownGrab: 0, snipe: null,
+      routine: null,
       watch: null, locked: false,
     };
     const $ = (id) => document.getElementById(id);
@@ -572,6 +598,8 @@
       renderRuleChips();
       renderSports();
       state.courts = [];
+      renderWeekdays([]);
+      renderRoutineTargets([{ courtId: ANY, time: "20:00" }]);
       renderTargets([{ courtId: ANY, time: "19:00" }]);
       await refreshAll();
     }
@@ -587,6 +615,7 @@
       loadRelease();
       await loadSession();
       await loadCourts();
+      await loadRoutine();
       await loadBoard();
     }
 
@@ -679,50 +708,163 @@
       return options;
     }
 
-    function readTargets() {
-      return [...document.querySelectorAll(".target")].map((row) => ({
+    function readTargetRows(box) {
+      return [...box.querySelectorAll(".target")].map((row) => ({
         courtId: row.querySelector(".t-court").value,
+        name: row.querySelector(".t-court").selectedOptions[0]?.textContent || "",
         time: row.querySelector(".t-time").value,
       }));
     }
 
-    function renderTargets(rows) {
-      const box = $("targets");
+    function readTargets() {
+      return readTargetRows($("targets")).map((row) => ({ courtId: row.courtId, time: row.time }));
+    }
+
+    function renderTargetRows(box, rows, onRemove) {
       const times = timeOptions();
       box.replaceChildren(...rows.map((row, index) => {
+        const known = state.courts.some((item) => item.id === row.courtId);
         const court = el("select", { class: "field t-court", "aria-label": `目標 ${index + 1} 場地` }, [
           el("option", { value: ANY, text: "任一場" }),
           ...state.courts.map((item) => el("option", { value: item.id, text: item.name })),
+          row.courtId && !known ? el("option", { value: row.courtId, text: row.name || row.courtId }) : null,
         ]);
-        court.value = state.courts.some((item) => item.id === row.courtId) ? row.courtId : ANY;
+        court.value = [...court.options].some((option) => option.value === row.courtId) ? row.courtId : ANY;
         const time = el("select", { class: "field t-time", "aria-label": `目標 ${index + 1} 時間` },
           times.map((item) => el("option", { value: item.value, text: item.label })));
         if (times.some((item) => item.value === row.time)) time.value = row.time;
         const remove = rows.length > 1
-          ? el("button", { class: "remove", type: "button", title: "移除", "aria-label": "移除", text: "×", onclick: () => {
-              const next = readTargets();
-              next.splice(index, 1);
-              renderTargets(next);
-            } })
+          ? el("button", { class: "remove", type: "button", title: "移除", "aria-label": "移除", text: "×", onclick: () => onRemove(index) })
           : el("span");
         return el("div", { class: "target" }, [el("span", { class: "target-no", text: String(index + 1) }), court, time, remove]);
       }));
-      const full = rows.length >= maxTargets();
-      $("addTarget").classList.toggle("hidden", full);
+    }
+
+    function renderTargets(rows) {
+      renderTargetRows($("targets"), rows, (index) => {
+        const next = readTargets();
+        next.splice(index, 1);
+        renderTargets(next);
+      });
+      $("addTarget").classList.toggle("hidden", rows.length >= maxTargets());
       const rules = state.venue.rules;
       $("targetHint").textContent = rules.distinct_courts && rows.length > 1
         ? "選「任一場」時會自動避開其他目標用到的場地。"
         : "「任一場」會在開放瞬間用時段篩選找出所有空場，搶第一個有空的。";
     }
 
+    // ---- weekly routine -----------------------------------------------
+
+    function renderWeekdays(selected) {
+      const picked = new Set(selected || []);
+      $("weekdays").replaceChildren(...[...DAYS].map((label, index) => {
+        const button = el("button", {
+          type: "button",
+          class: "wd-btn" + (picked.has(index) ? " on" : ""),
+          text: label,
+          "aria-pressed": picked.has(index) ? "true" : "false",
+          "aria-label": "週" + label,
+        });
+        button.dataset.day = String(index);
+        button.onclick = () => {
+          const on = !button.classList.contains("on");
+          button.classList.toggle("on", on);
+          button.setAttribute("aria-pressed", on ? "true" : "false");
+        };
+        return button;
+      }));
+    }
+
+    function readWeekdays() {
+      return [...$("weekdays").querySelectorAll("button.on")].map((button) => Number(button.dataset.day));
+    }
+
+    function renderRoutineTargets(rows) {
+      renderTargetRows($("routineTargets"), rows, (index) => {
+        const next = readTargetRows($("routineTargets"));
+        next.splice(index, 1);
+        renderRoutineTargets(next);
+      });
+      $("addRoutineTarget").classList.toggle("hidden", rows.length >= maxTargets());
+    }
+
+    function routineStatusText(data) {
+      if (!data || !data.enabled) return "選星期和時段後套用。之後每天開放前會自動排上第 14 天，不必再每天設一次。";
+      const release = data.release || {};
+      let next = "";
+      if (data.skipDate && data.skipDate === release.targetDate) {
+        next = `這一波 ${release.targetLabel || ""} 已取消，之後符合的日子仍會自動排。`;
+      } else if (data.due) {
+        next = `下一波 ${release.targetLabel || ""} 會在 ${release.opensLabel || ""} 前自動排好。`;
+      } else {
+        next = `下一波 ${release.targetLabel || ""} 不是選定的星期，到了會再排。`;
+      }
+      return `已套用：${data.label}。${next}`;
+    }
+
+    function showRoutine(data, fill) {
+      if (!data) return;
+      state.routine = data;
+      $("routineStatus").textContent = routineStatusText(data);
+      $("routineOff").classList.toggle("hidden", !data.enabled);
+      if (!fill) return;
+      renderWeekdays(data.weekdays || []);
+      renderRoutineTargets((data.targets && data.targets.length) ? data.targets : [{ courtId: ANY, time: "20:00" }]);
+    }
+
+    async function loadRoutine() {
+      try {
+        showRoutine(await api("/api/routine" + query()), true);
+      } catch (error) {
+        toast(error.message, "error");
+      }
+    }
+
+    function namedTargets(rows) {
+      return rows.map((row) => ({
+        courtId: row.courtId,
+        time: row.time,
+        name: row.courtId ? (state.courts.find((item) => item.id === row.courtId) || {}).name || row.name || row.courtId : "任一場",
+      }));
+    }
+
+    async function saveRoutine() {
+      const weekdays = readWeekdays();
+      if (!weekdays.length) {
+        toast("請至少選一個星期", "error");
+        return;
+      }
+      const named = namedTargets(readTargetRows($("routineTargets")));
+      const days = weekdays.map((day) => "週" + DAYS[day]).join("、");
+      const lines = named.map((row) => `・${row.name} ${row.time}`).join("\n");
+      const who = $("accountSelect").selectedOptions[0]?.textContent || state.account;
+      if (!confirm(`用「${who}」設定每週固定\n${state.venue.name} ${state.category}\n${days}\n${lines}\n\n之後凡是這些星期，都會在當天 ${state.venue.rules.release_time} 開放前自動排上第 ${state.venue.rules.window_days} 天。付款仍要自己完成。`)) return;
+      try {
+        showRoutine(await api("/api/routine", json(target({
+          enabled: true, category: state.category, weekdays, targets: named,
+        }))), true);
+        toast("已套用每週固定。符合的日子會在開放前自動排好");
+        loadJobs();
+      } catch (error) {
+        toast(error.message, "error");
+      }
+    }
+
+    async function clearRoutine() {
+      if (!confirm("停用每週固定？已排上、還沒開搶的這一波也會取消。")) return;
+      try {
+        showRoutine(await api("/api/routine", json(target({ enabled: false }))), true);
+        toast("已停用每週固定");
+        loadJobs();
+      } catch (error) {
+        toast(error.message, "error");
+      }
+    }
+
     // ---- snipe -------------------------------------------------------
 
     async function startSnipe() {
-      const rows = readTargets();
-      const named = rows.map((row) => ({
-        ...row,
-        name: row.courtId ? (state.courts.find((item) => item.id === row.courtId) || {}).name : "任一場",
-      }));
+      const named = namedTargets(readTargets());
       const lines = named.map((row) => `・${row.name} ${row.time}`).join("\n");
       const who = $("accountSelect").selectedOptions[0]?.textContent || state.account;
       if (!confirm(`用「${who}」搶 ${state.venue.name}\n${state.release.targetLabel} ${state.category}\n${lines}\n\n${state.release.opensLabel} 看到空檔就送出訂單（訂單成立），付款仍要你自己完成。`)) return;
@@ -736,7 +878,12 @@
     }
 
     async function cancelSnipe() {
-      if (state.snipe?.running && !confirm("取消這次搶訂？")) return;
+      if (state.snipe?.running) {
+        const text = state.snipe.source === "routine"
+          ? "取消這一波？每週固定還在，之後符合的日子仍會自動排。這一波不會再自動排上。"
+          : "取消這次搶訂？";
+        if (!confirm(text)) return;
+      }
       try {
         showSnipe(await api("/api/snipe", json(target({ enabled: false }))));
         loadJobs();
@@ -761,6 +908,10 @@
         const alertBox = $("runAlert");
         alertBox.classList.toggle("hidden", data.phase !== "need_login");
         alertBox.textContent = "登入已失效，請在上方輸入驗證碼重新登入，否則無法搶訂。";
+        const note = $("runNote");
+        const weekly = data.source === "routine" && running;
+        note.classList.toggle("hidden", !weekly);
+        note.textContent = weekly ? "這一波是每週固定自動排上的。" : "";
         $("runTargets").replaceChildren(...(data.targets || []).map((item) => {
           const badge = item.status === "booked"
             ? el("span", { class: "badge ok", text: `已送出${item.bookedName ? " · " + item.bookedName : ""}` })
@@ -789,6 +940,7 @@
       state.events.onmessage = (event) => {
         const data = JSON.parse(event.data);
         showSnipe(data.snipe);
+        if (data.routine) showRoutine(data.routine);
         showWatch(data.watch);
         showSession(data.session);
         showGrab(data.lastGrab);
@@ -1093,8 +1245,10 @@
       try {
         const data = await api("/api/courts" + query({ category: state.category }));
         const rows = readTargets();
+        const routineRows = $("routineTargets").querySelector(".target") ? readTargetRows($("routineTargets")) : null;
         state.courts = data.courts;
         renderTargets(rows.length ? rows : [{ courtId: ANY, time: "19:00" }]);
+        if (routineRows) renderRoutineTargets(routineRows);
       } catch (error) {
         toast(error.message, "error");
       }
@@ -1421,6 +1575,14 @@
       const next = last ? fmt(Math.min(toMinutes(last.time) + state.venue.rules.slot_hours * 60, 21 * 60)) : "19:00";
       renderTargets([...rows, { courtId: ANY, time: next }]);
     };
+    $("addRoutineTarget").onclick = () => {
+      const rows = readTargetRows($("routineTargets"));
+      const last = rows[rows.length - 1];
+      const next = last ? fmt(Math.min(toMinutes(last.time) + state.venue.rules.slot_hours * 60, 21 * 60)) : "20:00";
+      renderRoutineTargets([...rows, { courtId: ANY, time: next }]);
+    };
+    $("routineBtn").onclick = saveRoutine;
+    $("routineOff").onclick = clearRoutine;
     $("snipeBtn").onclick = startSnipe;
     $("cancelBtn").onclick = cancelSnipe;
     $("watchStart").onclick = startWatch;

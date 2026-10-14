@@ -208,6 +208,18 @@ class Control:
         self.calls.append(("cancel", account_id))
         return "已取消搶訂"
 
+    def routine_text(self, account_id, venue_id):
+        self.calls.append(("routine-state", account_id, venue_id))
+        return "還沒有每週固定時段"
+
+    def set_routine_text(self, account_id, venue_id, category, spec):
+        self.calls.append(("weekly", category, spec["weekdays"], spec["targets"]))
+        return "已套用每週固定"
+
+    def clear_routine_text(self, account_id, venue_id):
+        self.calls.append(("weekly-off", account_id))
+        return "已停用每週固定"
+
     def watch_text(self, account_id, venue_id):
         self.calls.append(("watch-state", account_id))
         return "目前沒有盯場"
@@ -252,6 +264,12 @@ def test_slots_snipe_and_release_commands():
     bot.handle(message("/snipe"))
     assert ctrl.calls[-1] == ("snipe-state", None)
     assert "查詢中" not in api.texts()[-1]
+    bot.handle(message("/weekly"))
+    assert ctrl.calls[-1] == ("routine-state", None, None)
+    bot.handle(message("/weekly 二四 20:00"))
+    assert ctrl.calls[-1] == ("weekly", None, [1, 3], [{"court": "", "time": "20:00"}])
+    bot.handle(message("/weekly off"))
+    assert ctrl.calls[-1] == ("weekly-off", None)
     bot.handle(message("/snipe A 19:00 20"))
     assert ctrl.calls[-1] == (
         "arm",
