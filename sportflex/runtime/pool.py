@@ -70,6 +70,12 @@ class WorkerPool:
                 f"Telegram 已啟用，這台是 {server_label()}：登入失效會傳驗證碼（圖片會標這台名稱）",
                 flush=True,
             )
+        backups = [name for name in getattr(self.notifier, "channels", ()) if name != "Telegram"]
+        if backups:
+            print(
+                f"備援通知已啟用：{'、'.join(backups)}。搶到、付款提醒和登出會一併送出；驗證碼仍只走 Telegram。",
+                flush=True,
+            )
 
     def stop(self) -> None:
         if self.bot:
