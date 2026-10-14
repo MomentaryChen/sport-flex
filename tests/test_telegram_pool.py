@@ -72,6 +72,11 @@ def pool(tmp_path, monkeypatch):
     return built
 
 
+def test_accounts_share_one_coordinator(pool):
+    coords = {id(worker.coord) for worker in pool.workers.values()}
+    assert coords == {id(pool.coord)} and pool.coord is not None
+
+
 def test_slots_and_release(pool):
     text = pool.slots_text(None, None, "羽球", "2026-10-20", "18:00", "23:00")
     assert "19:00 - 20:00  羽球場_A $490" in text

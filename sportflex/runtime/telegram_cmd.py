@@ -308,6 +308,16 @@ def format_slots(venue_name: str, board: dict, time_from: str, time_to: str) -> 
     return clip("\n".join(lines))
 
 
+def _moved_from(item: dict) -> str:
+    origin_time = item.get("fromTime") or ""
+    origin_name = item.get("fromName") or ""
+    if not origin_time:
+        return ""
+    if origin_time == item.get("time") and origin_name == (item.get("name") or ""):
+        return ""
+    return f"（原 {origin_name or '任一場'} {origin_time}）"
+
+
 def format_snipe(venue_name: str, state: dict) -> str:
     release = state.get("release") or {}
     targets = state.get("targets") or []
@@ -319,7 +329,8 @@ def format_snipe(venue_name: str, state: dict) -> str:
     for item in targets:
         label = TARGET_STATUS.get(item.get("status") or "", "")
         extra = f"  {label}" if label and item.get("status") not in {"", "waiting"} else ""
-        lines.append(f"・{item.get('name') or '任一場'} {item.get('time')}{extra}")
+        origin = _moved_from(item)
+        lines.append(f"・{item.get('name') or '任一場'} {item.get('time')}{origin}{extra}")
     if state.get("running"):
         lines.append("看到空檔會送出訂單，付款要自己完成。取消：/cancel")
     return "\n".join(lines)

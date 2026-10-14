@@ -9,6 +9,7 @@ import time
 from sportflex.core.accounts import Account
 from datetime import datetime, timedelta
 
+from sportflex.core.coord import Coordinator
 from sportflex.core.engine import (
     SnipeJob,
     WatchJob,
@@ -21,7 +22,7 @@ from sportflex.core.engine import (
 from sportflex.core.events import EventStore, NullEventStore
 from sportflex.core.models import Slot, slot_bounds
 from sportflex.core.notify import Notifier
-from sportflex.core.rules import quota_reason
+from sportflex.core.rules import next_release, quota_reason
 from sportflex.core.storage import WatchStore
 from sportflex.core.venue import Venue
 from sportflex.providers import create_provider
@@ -81,14 +82,18 @@ class AccountWorker:
         notifier: Notifier,
         events: EventStore | None = None,
         bot: TelegramBot | None = None,
+        coord: Coordinator | None = None,
     ) -> None:
         self.account = account
         self.notifier = notifier
         self.events = events or NullEventStore()
         self.bot = bot
+        self.coord = coord
         self.venues = {vid: venue for vid, venue in venues.items() if venue.provider == account.provider}
         self.snipes = {
-            vid: SnipeJob(venue, account.id, self._record_grab, self._alert, self.events, on_logout=self._logged_out)
+            vid: SnipeJob(
+                venue, account.id, self._record_grab, self._alert, self.events, on_logout=self._logged_out, coord=coord
+            )
             for vid, venue in self.venues.items()
         }
         self.watch: WatchJob | None = None
@@ -714,9 +719,25 @@ class AccountWorker:
 
     def set_snipe(self, venue: Venue, category: str | None, targets: list | None) -> dict:
         job = self.snipes[venue.id]
+        category = category or venue.categories[0]
         if targets is None:
             return self.call(lambda _provider: job.cancel())
-        return self.call(lambda _provider: job.arm(category or venue.categories[0], targets))
+
+        def run(provider: Provider) -> dict:
+            courts: list[tuple[str, str]] = []
+            # Court names are only needed when another account is already waiting on this wave.
+            release = next_release(venue.rules)
+            waiting = self.coord is not None and self.coord.has_peers(
+                venue.id, category, release["targetDate"], self.account.id
+            )
+            if waiting:
+                try:
+                    courts = [(court.id, court.name) for court in provider.list_courts(venue, category)]
+                except Exception:
+                    courts = []
+            return job.arm(category, targets, courts)
+
+        return self.call(run)
 
     def set_watch(self, venue: Venue | None, spec: dict | None) -> dict:
         def run(_provider: Provider) -> dict:

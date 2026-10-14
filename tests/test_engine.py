@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 import pytest
 
 from sportflex.core import engine
+from sportflex.core.coord import Coordinator
 from sportflex.core.engine import SnipeJob, WatchJob
 from sportflex.core.models import Availability, Court, Slot
 from sportflex.core.rules import BookingRules, next_release
@@ -649,3 +650,68 @@ def test_failed_or_cancelled_board_scan_is_not_cached():
 
     play(worker.stream_board(venue, "羽球", "2026-10-10")[0])
     assert calls == {"list": 2, "slots": 3}
+
+
+def _pair(venue):
+    coord = Coordinator()
+    me = SnipeJob(venue, "me", lambda result: None, coord=coord)
+    family = SnipeJob(venue, "family", lambda result: None, coord=coord)
+    return me, family
+
+
+def test_two_accounts_are_sent_to_different_courts(venue):
+    me, family = _pair(venue)
+    courts = [("A", "場A"), ("B", "場B")]
+    me.arm("羽球", [{"courtId": "", "time": "19:00"}], courts)
+    family.arm("羽球", [{"courtId": "", "time": "19:00"}], courts)
+    assert family.spec["targets"][0]["lane"] == 1 and family.spec["targets"][0]["time"] == "19:00"
+    me_provider = FakeProvider(released_date=me.spec["targetDate"])
+    family_provider = FakeProvider(released_date=family.spec["targetDate"])
+    me_provider.open = family_provider.open = {"A": ["19:00"], "B": ["19:00"]}
+    me._prepared = family._prepared = True
+    me.tick(me_provider, opens(me) + timedelta(seconds=1))
+    family.tick(family_provider, opens(family) + timedelta(seconds=1))
+    assert me_provider.submitted == [("A", me.spec["targetDate"], "19:00 - 20:00")]
+    assert family_provider.submitted == [("B", family.spec["targetDate"], "19:00 - 20:00")]
+
+
+def test_same_named_court_is_reassigned_before_the_wave(venue):
+    me, family = _pair(venue)
+    courts = [("A", "場A"), ("B", "場B")]
+    me.arm("羽球", [{"courtId": "A", "name": "場A", "time": "19:00"}], courts)
+    family.arm("羽球", [{"courtId": "A", "name": "場A", "time": "19:00"}], courts)
+    assert family.spec["targets"][0]["courtId"] == "B"
+    assert family.state()["targets"][0]["fromName"] == "場A"
+    assert any("錯開" in line for line in family.log.lines)
+
+
+def test_only_open_court_sends_the_other_account_to_another_time(venue):
+    me, family = _pair(venue)
+    courts = [("A", "場A"), ("B", "場B")]
+    me.arm("羽球", [{"courtId": "", "time": "19:00"}], courts)
+    family.arm("羽球", [{"courtId": "", "time": "19:00"}], courts)
+    me_provider = FakeProvider(released_date=me.spec["targetDate"])
+    family_provider = FakeProvider(released_date=family.spec["targetDate"])
+    me_provider.open = {"A": ["19:00"]}
+    family_provider.open = {"A": ["19:00", "20:00"]}
+    me._prepared = family._prepared = True
+    me.tick(me_provider, opens(me) + timedelta(seconds=1))
+    family.tick(family_provider, opens(family) + timedelta(seconds=1))
+    assert family_provider.submitted == []
+    assert family.spec["targets"][0]["time"] == "20:00"
+    family._next_at = 0
+    family.tick(family_provider, opens(family) + timedelta(seconds=2))
+    assert family_provider.submitted == [("A", family.spec["targetDate"], "20:00 - 21:00")]
+    assert me_provider.submitted[0][0] == "A" and "19:00" in me_provider.submitted[0][2]
+
+
+def test_cancelling_frees_the_cell_for_the_other_account(venue):
+    me, family = _pair(venue)
+    courts = [("A", "場A")]
+    me.arm("羽球", [{"courtId": "A", "name": "場A", "time": "19:00"}], courts)
+    family.arm("羽球", [{"courtId": "A", "name": "場A", "time": "19:00"}], courts)
+    assert family.spec["targets"][0]["time"] == "20:00"
+    me.cancel()
+    family.cancel()
+    family.arm("羽球", [{"courtId": "A", "name": "場A", "time": "19:00"}], courts)
+    assert family.spec["targets"][0]["time"] == "19:00" and "fromTime" not in family.spec["targets"][0]

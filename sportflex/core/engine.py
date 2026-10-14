@@ -6,6 +6,7 @@ from dataclasses import asdict
 from datetime import datetime, timedelta
 from typing import Callable
 
+from sportflex.core.coord import Coordinator, nearest_times
 from sportflex.core.events import EventStore, NullEventStore
 from sportflex.core.models import Court, Slot, slot_bounds, slot_matches
 from sportflex.core.notify import Notifier
@@ -15,7 +16,28 @@ from sportflex.core.venue import Venue
 from sportflex.providers.base import NeedLogin, Provider, Throttled
 
 ACTIVE_PHASES = {"armed", "preparing", "ready", "firing", "need_login"}
-RUN_TARGET_KEYS = ("courtId", "name", "time", "status", "bookedName", "seenSec", "bookedSec", "submitSec", "attempts")
+RUN_TARGET_KEYS = (
+    "courtId",
+    "name",
+    "time",
+    "status",
+    "bookedName",
+    "fromName",
+    "fromTime",
+    "seenSec",
+    "bookedSec",
+    "submitSec",
+    "attempts",
+)
+MAX_TIME_SHIFTS = 4
+
+
+def _public_target(item: dict) -> dict:
+    shown = {key: item.get(key) for key in ("courtId", "name", "time", "status", "bookedName")}
+    for key in ("fromName", "fromTime", "lane"):
+        if item.get(key):
+            shown[key] = item[key]
+    return shown
 
 Alert = Callable[[str, str], None]  # (title, body) pushed to the user
 
@@ -195,6 +217,7 @@ class SnipeJob:
         on_alert: Alert = _no_alert,
         events: EventStore | None = None,
         on_logout: Callable[[], None] = _no_logout,
+        coord: Coordinator | None = None,
     ) -> None:
         self.venue = venue
         self.account_id = account_id
@@ -202,6 +225,7 @@ class SnipeJob:
         self.on_grab = on_grab
         self.on_alert = on_alert
         self.on_logout = on_logout  # the worker starts a Telegram re-login
+        self.coord = coord  # shared with the other accounts, so they don't submit the same cell
         self.events = events or NullEventStore()
         self.spec: dict | None = None
         self.log = JobLog(_sink(self.events, account_id, venue.id, "snipe"))
@@ -221,11 +245,22 @@ class SnipeJob:
     def active(self) -> bool:
         return bool(self.spec) and self.spec["phase"] in ACTIVE_PHASES
 
-    def arm(self, category: str, raw_targets: list) -> dict:
+    def arm(self, category: str, raw_targets: list, courts: list[tuple[str, str]] | None = None) -> dict:
         if category not in self.venue.categories:
             raise ValueError(f"{self.venue.display_name} 沒有 {category}")
         targets = validate_targets(self.rules, raw_targets)
         release = next_release(self.rules)
+        notes: list[str] = []
+        if self.coord is not None:
+            targets, notes = self.coord.assign(
+                self.rules,
+                self.venue.id,
+                category,
+                release["targetDate"],
+                self.account_id,
+                targets,
+                courts or [],
+            )
         self.spec = {
             "category": category,
             "targetDate": release["targetDate"],
@@ -249,9 +284,12 @@ class SnipeJob:
             opensAt=release["opensAt"],
             targets=targets,
         )
+        if notes:
+            self.log.note("；".join(notes), "coordinated", targets=targets)
         return self.state()
 
     def cancel(self) -> dict:
+        self._drop_plan(release_claims=True)
         self.spec = None
         self._prepared = False
         self._run = None
@@ -271,6 +309,7 @@ class SnipeJob:
         saved["opensAt"] = release["opensAt"]
         self.spec = saved
         self._reset_alerts()
+        self._publish()
         self.log.note("恢復尚未完成的搶訂設定", "restored", targetDate=saved["targetDate"])
 
     def state(self) -> dict:
@@ -282,10 +321,7 @@ class SnipeJob:
             "phase": phase,
             "category": self.spec["category"] if self.spec else "",
             "release": next_release(self.rules),
-            "targets": [
-                {key: item.get(key) for key in ("courtId", "name", "time", "status", "bookedName")}
-                for item in (self.spec["targets"] if self.spec else [])
-            ],
+            "targets": [_public_target(item) for item in (self.spec["targets"] if self.spec else [])],
             "log": self.log.lines[-12:],
         }
 
@@ -424,47 +460,60 @@ class SnipeJob:
             self._finish("這波搶訂結束")
             return
         booked_any = False
-        for item in pending:
-            try:
-                candidates = self._candidates(provider, spec, item)
-            except Throttled as exc:
-                self.log.note(f"{item['name']} 查詢太頻繁：{exc}", "throttled", "warn", sec=self._sec())
-                self._throttled()
+        try:
+            for item in pending:
+                try:
+                    candidates, peer_blocked = self._candidates(provider, spec, item)
+                except Throttled as exc:
+                    self.log.note(f"{item['name']} 查詢太頻繁：{exc}", "throttled", "warn", sec=self._sec())
+                    self._throttled()
+                    return
+                except NeedLogin as exc:
+                    self.log.note(f"{item['name']} 查詢失敗，登入已失效：{exc}", "login_dropped", "error", sec=self._sec())
+                    self._need_login_alert(LOGIN_DROPPED_WHILE_FIRING)
+                    continue
+                except Exception as exc:
+                    self.log.note(f"{item['name']} 查詢失敗：{exc}", "error", "error", sec=self._sec())
+                    continue
+                if not candidates:
+                    if peer_blocked:
+                        self._divert_time(spec, item)
+                    continue
+                scan = int(item.get("_scan_idx") or 0)
+                court = candidates[scan % len(candidates)]
+                outcome = self._attempt(provider, spec, item, court)
+                if outcome == "throttled":
+                    self._throttled()
+                    return
+                if outcome == "unreleased":
+                    self.log.quiet(f"{spec['targetDate']} 還沒釋出")
+                    self._next_at = time.time() + self.rules.poll_sec
+                    return
+                if outcome == "booked":
+                    booked_any = True
+                elif outcome in {"miss", "contested"} and len(candidates) > 1:
+                    item["_scan_idx"] = (scan + 1) % len(candidates)
+            if all(item.get("status") in {"booked", "skipped"} for item in spec["targets"]):
+                self._finish("目標都處理完了")
                 return
-            except NeedLogin as exc:
-                self.log.note(f"{item['name']} 查詢失敗，登入已失效：{exc}", "login_dropped", "error", sec=self._sec())
-                self._need_login_alert(LOGIN_DROPPED_WHILE_FIRING)
-                continue
-            except Exception as exc:
-                self.log.note(f"{item['name']} 查詢失敗：{exc}", "error", "error", sec=self._sec())
-                continue
-            if not candidates:
-                continue
-            scan = int(item.get("_scan_idx") or 0)
-            court = candidates[scan % len(candidates)]
-            outcome = self._attempt(provider, spec, item, court)
-            if outcome == "throttled":
-                self._throttled()
-                return
-            if outcome == "unreleased":
-                self.log.quiet(f"{spec['targetDate']} 還沒釋出")
-                self._next_at = time.time() + self.rules.poll_sec
-                return
-            if outcome == "booked":
-                booked_any = True
-            elif outcome == "miss" and len(candidates) > 1:
-                item["_scan_idx"] = (scan + 1) % len(candidates)
-        if all(item.get("status") in {"booked", "skipped"} for item in spec["targets"]):
-            self._finish("目標都處理完了")
-            return
-        self._next_at = time.time() + self.rules.poll_sec
-        if not booked_any:
-            self.log.quiet(f"尚無符合的空檔，繼續查 {spec['targetDate']}")
+            self._next_at = time.time() + self.rules.poll_sec
+            if not booked_any:
+                self.log.quiet(f"尚無符合的空檔，繼續查 {spec['targetDate']}")
+        finally:
+            if self.spec and self.spec.get("phase") in ACTIVE_PHASES:
+                self._publish()
 
-    def _candidates(self, provider: Provider, spec: dict, item: dict) -> list[Court]:
-        """The named court, or for an any-court target every free court not claimed by another target."""
-        if item["courtId"]:
-            return [self._court(provider, spec, item["courtId"])]
+    def _candidates(self, provider: Provider, spec: dict, item: dict) -> tuple[list[Court], bool]:
+        """Courts worth submitting for this target, and whether siblings already hold every open one.
+
+        A named court stays put until another account has that cell. Then this account takes a
+        different free court at the same time. An any-court target skips courts claimed by its
+        other targets and by sibling accounts, starting at its lane so two accounts don't both
+        try the first free court.
+        """
+        blocked = self._blocked_courts(spec, item["time"])
+        if item["courtId"] and item["courtId"] not in blocked:
+            return [self._court(provider, spec, item["courtId"])], False
         end = slot_end(item["time"], self.rules.slot_hours)
         try:
             free = provider.search(self.venue, spec["category"], spec["targetDate"], item["time"], end)
@@ -475,7 +524,71 @@ class SnipeJob:
             self.log.quiet(f"時段篩選失敗（{exc}），改逐場查詢")
             free = list(spec.get("courts") or {})
         claimed = self._claimed(spec, item)
-        return [self._court(provider, spec, court_id) for court_id in free if court_id not in claimed]
+        opened = [court_id for court_id in free if court_id not in claimed]
+        open_ids = [court_id for court_id in opened if court_id not in blocked]
+        courts = [self._court(provider, spec, court_id) for court_id in open_ids]
+        lane = int(item.get("lane") or 0)
+        if lane and len(courts) > 1:
+            shift = lane % len(courts)
+            courts = courts[shift:] + courts[:shift]
+        peer_blocked = bool(self.coord) and bool(opened) and not courts
+        return courts, peer_blocked
+
+    def _blocked_courts(self, spec: dict, when: str) -> set[str]:
+        if self.coord is None:
+            return set()
+        return self.coord.blocked_courts(self.venue.id, spec["category"], spec["targetDate"], when, self.account_id)
+
+    def _claim(self, spec: dict, court_id: str, when: str) -> bool:
+        if self.coord is None:
+            return True
+        return self.coord.try_claim(self.venue.id, spec["category"], spec["targetDate"], self.account_id, court_id, when)
+
+    def _release_claim(self, spec: dict, court_id: str, when: str) -> None:
+        if self.coord is None:
+            return
+        self.coord.release_claim(self.venue.id, spec["category"], spec["targetDate"], self.account_id, court_id, when)
+
+    def _publish(self) -> None:
+        spec = self.spec
+        if self.coord is None or not spec:
+            return
+        self.coord.publish(self.venue.id, spec["category"], spec["targetDate"], self.account_id, spec["targets"])
+
+    def _drop_plan(self, release_claims: bool) -> None:
+        spec = self.spec
+        if self.coord is None or not spec:
+            return
+        self.coord.unpublish(self.venue.id, spec.get("category") or "", spec.get("targetDate") or "", self.account_id)
+        if release_claims:
+            self.coord.release_account(self.venue.id, self.account_id)
+
+    def _divert_time(self, spec: dict, item: dict) -> bool:
+        """The open courts at this time belong to other accounts. Look at a nearby time instead."""
+        shifts = int(item.get("_shifts") or 0)
+        if shifts >= MAX_TIME_SHIFTS:
+            return False
+        origin = item.get("fromTime") or item["time"]
+        taken = {
+            other["time"]
+            for other in spec["targets"]
+            if other is not item and other.get("status") != "skipped"
+        }
+        for when in nearest_times(self.rules, origin):
+            if when == item["time"] or when in taken:
+                continue
+            old = item["time"]
+            item["time"] = when
+            item["_shifts"] = shifts + 1
+            item.setdefault("fromTime", origin)
+            item.setdefault("fromName", item["name"])
+            self.log.note(
+                f"和其他帳號錯開：{item.get('fromName') or item['name']} {old} 改看 {when}",
+                "coordinated",
+                time=when,
+            )
+            return True
+        return False
 
     def _claimed(self, spec: dict, item: dict) -> set[str]:
         if not self.rules.distinct_courts:
@@ -534,14 +647,19 @@ class SnipeJob:
         self.log.note(
             f"看到 {court.name} {slot.time}，送出", "submit", court=court.name, time=slot.time, sec=item["seenSec"]
         )
+        if not self._claim(spec, court.id, item["time"]):
+            self.log.note(f"{court.name} {item['time']} 其他帳號正在搶，改看別的", "coordinated", sec=self._sec())
+            return "contested"
         started = time.monotonic()
         try:
             result = grab(provider, self.venue, court, spec["targetDate"], slot)
         except NeedLogin as exc:
+            self._release_claim(spec, court.id, item["time"])
             self.log.note(f"{court.name} 送出失敗，登入已失效：{exc}", "login_dropped", "error", sec=self._sec())
             self._need_login_alert(LOGIN_DROPPED_WHILE_FIRING)
             return "miss"
         except Exception as exc:
+            self._release_claim(spec, court.id, item["time"])
             self.log.note(f"{court.name} 送出失敗：{exc}", "error", "error", sec=self._sec())
             return "miss"
         item["status"] = "booked"
@@ -568,6 +686,7 @@ class SnipeJob:
         spec = self.spec
         if spec:
             spec["phase"] = "done"
+            self._drop_plan(release_claims=False)
             self._record_run(spec, text)
         else:
             self.log.note(text)

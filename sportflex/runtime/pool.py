@@ -4,6 +4,7 @@ import threading
 from datetime import datetime
 
 from sportflex.core.accounts import load_accounts, load_env, pick_account
+from sportflex.core.coord import Coordinator
 from sportflex.core.events import EventStore
 from sportflex.core.models import Slot, slot_bounds
 from sportflex.core.notify import Notifier, default_notifier
@@ -48,8 +49,9 @@ class WorkerPool:
         self.notifier = notifier or default_notifier()
         self.events = events or EventStore()
         self.bot = bot or bot_from_env()
+        self.coord = Coordinator()
         self.workers = {
-            account_id: AccountWorker(account, self.venues, self.notifier, self.events, self.bot)
+            account_id: AccountWorker(account, self.venues, self.notifier, self.events, self.bot, coord=self.coord)
             for account_id, account in self.accounts.items()
         }
 
