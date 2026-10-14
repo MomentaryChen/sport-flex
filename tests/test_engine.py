@@ -116,6 +116,16 @@ def test_prepares_then_fires_and_stops_at_confirm(venue):
     assert grabs and grabs[0]["court"] == "場A" and grabs[0]["pressed"] == "確認預約"
 
 
+def test_quiet_lines_are_throttled_per_text():
+    from sportflex.core.engine import JobLog
+
+    log = JobLog()
+    log.quiet("還沒釋出")
+    log.quiet("還沒釋出")
+    log.quiet("場A 同一天最多 2 小時")
+    assert [line.split(" ", 1)[1] for line in log.lines] == ["還沒釋出", "場A 同一天最多 2 小時"]
+
+
 def test_new_browser_parks_on_the_reserve_page_again(venue):
     grabs = []
     job = armed(venue, grabs)
