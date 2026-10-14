@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import queue
+import signal
 import socket
 import threading
 import time
@@ -26,14 +27,39 @@ INDEX = Path(__file__).resolve().parent / "static" / "index.html"
 SHUTDOWN = threading.Event()
 
 
+HEALTH_CHECK_SEC = 30
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     pool = WorkerPool()
     await asyncio.to_thread(pool.start)
     app.state.pool = pool
+    # Docker's restart policy ignores "unhealthy"; only an exit brings the container back.
+    watchdog = None
+    if os.environ.get("SPORT_FLEX_EXIT_WHEN_DEAD") == "1":
+        watchdog = asyncio.create_task(_exit_when_dead(pool, _terminate))
     yield
+    if watchdog:
+        watchdog.cancel()
     print("關閉瀏覽器中…", flush=True)
     await asyncio.to_thread(pool.stop)
+
+
+async def _exit_when_dead(pool: WorkerPool, terminate, interval: float = HEALTH_CHECK_SEC) -> None:
+    while not SHUTDOWN.is_set():
+        health = pool.health()
+        dead = [item for item in health["accounts"] if not item["healthy"]]
+        if dead:
+            names = "、".join(f"{item['id']}（{item['error'] or '已停止'}）" for item in dead)
+            print(f"帳號 {names} 無法使用，結束服務讓容器重啟", flush=True)
+            terminate()
+            return
+        await asyncio.sleep(interval)
+
+
+def _terminate() -> None:
+    os.kill(os.getpid(), signal.SIGTERM)
 
 
 app = FastAPI(title="sport-flex", lifespan=lifespan)
@@ -125,6 +151,13 @@ def index():
 @app.get("/api/meta")
 def meta(request: Request):
     return {"ok": True, **pool(request).meta()}
+
+
+@app.get("/api/health")
+def health(request: Request):
+    """503 when an account's browser is gone for good; the Docker healthcheck reads this."""
+    state = pool(request).health()
+    return JSONResponse({"ok": state["healthy"], **state}, status_code=200 if state["healthy"] else 503)
 
 
 @app.get("/api/release")
