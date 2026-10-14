@@ -88,7 +88,15 @@ class AccountWorker:
         self.bot = bot
         self.venues = {vid: venue for vid, venue in venues.items() if venue.provider == account.provider}
         self.snipes = {
-            vid: SnipeJob(venue, account.id, self._record_grab, self._alert, self.events, on_logout=self._logged_out)
+            vid: SnipeJob(
+                venue,
+                account.id,
+                self._record_grab,
+                self._alert,
+                self.events,
+                on_logout=self._logged_out,
+                on_watch=lambda spec, venue=venue: self._adopt_watch(venue, spec),
+            )
             for vid, venue in self.venues.items()
         }
         self.watch: WatchJob | None = None
@@ -196,13 +204,16 @@ class AccountWorker:
                 job.tick(provider)
             except Exception as exc:
                 job.log.note(f"搶訂出錯：{exc}")
-        if not active:  # a snipe owns the page (and checks the login itself); watching waits
+        # An armed snipe can sit for hours. Only the window around release owns the page,
+        # the same rule as a manual timetable query (page_lock_reason).
+        if not self.page_lock_reason():
             if self.watch and self.watch.running:
                 try:
                     self.watch.tick(provider)
                 except Exception as exc:
                     self.watch.log.note(f"盯場出錯：{exc}")
-            self._keepalive(provider)
+            if not active:  # the snipe checks its own login; keep-alive is for an idle account
+                self._keepalive(provider)
         if self.watch and not self.watch.running:
             WatchStore(self.account.id).clear()
         self._check_payments(provider)
@@ -539,7 +550,21 @@ class AccountWorker:
             self.events,
             on_logout=self._logged_out,
             account_id=self.account.id,
+            on_change=self._persist_watch,
         )
+
+    def _persist_watch(self, spec: dict) -> None:
+        WatchStore(self.account.id).save(spec)
+
+    def _adopt_watch(self, venue: Venue, spec: dict) -> bool:
+        """Start a watch for slots a snipe missed. A watch the user already started is left alone."""
+        if self.watch and self.watch.running:
+            return False
+        saved = {key: value for key, value in spec.items() if value is not None}
+        saved["venue"] = venue.id
+        self.watch = self._new_watch(venue, saved)
+        self._persist_watch(saved)
+        return True
 
     # ---- browsing and booking -----------------------------------------
 

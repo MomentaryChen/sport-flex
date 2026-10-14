@@ -334,9 +334,14 @@ def format_watch(venue_name: str, state: dict) -> str:
             "指定場地：/watch 明天 19:00 A\n"
             "停止：/watch off"
         )
-    window = "–".join(part for part in (spec.get("timeFrom") or "", spec.get("timeTo") or "") if part)
-    court = spec.get("courtName") or ("指定場" if spec.get("courtId") else "任一場")
-    bits = [spec.get("category") or "", spec.get("date") or "", window or "全天", court]
+    targets = spec.get("targets") or []
+    if targets:
+        listed = "、".join(f"{item.get('name') or '任一場'} {item.get('time')}" for item in targets)
+        bits = [spec.get("category") or "", spec.get("date") or "", listed]
+    else:
+        window = "–".join(part for part in (spec.get("timeFrom") or "", spec.get("timeTo") or "") if part)
+        court = spec.get("courtName") or ("指定場" if spec.get("courtId") else "任一場")
+        bits = [spec.get("category") or "", spec.get("date") or "", window or "全天", court]
     lines = [f"盯場 {venue_name} " + " ".join(bit for bit in bits if bit)]
     lines.append("看到空檔會送出訂單，付款要自己完成。停止：/watch off")
     log = state.get("log") or []
