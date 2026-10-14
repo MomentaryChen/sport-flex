@@ -278,6 +278,8 @@
     .sheet img { width: 100%; border-radius: 12px; border: 1px solid var(--line); margin-top: 12px; }
     .sheet-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
     .notice { font-size: 13px; padding: 10px 12px; border-radius: 10px; background: var(--accent-soft); color: var(--accent-ink); margin-top: 10px; white-space: pre-wrap; word-break: break-all; }
+    .notice.warn { background: var(--warn-soft); color: var(--warn); border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent); }
+    a.btn { display: inline-flex; align-items: center; text-decoration: none; }
     .toast-box { position: fixed; z-index: 60; left: 50%; bottom: 20px; transform: translateX(-50%); display: grid; gap: 8px; width: min(420px, calc(100% - 32px)); }
     .toast { padding: 11px 14px; border-radius: 12px; background: var(--ink); color: var(--surface); box-shadow: var(--shadow); font-size: 13px; animation: rise .2s ease-out; }
     .toast.error { background: var(--danger); color: #fff; }
@@ -463,6 +465,7 @@
         <button class="btn btn-ghost" id="closeModal" type="button">關閉</button>
       </div>
       <div class="notice" id="resultText"></div>
+      <div class="notice warn hidden" id="resultRefund" role="note"></div>
       <img id="resultImage" alt="網站畫面" />
       <div class="sheet-actions" id="resultButtons"></div>
     </div>
@@ -1349,6 +1352,7 @@
     function showResult(result) {
       $("resultTitle").textContent = [result.court, result.date, result.time].filter(Boolean).join(" · ") || "網站畫面";
       const order = result.order;
+      const calendar = result.calendar || null;
       $("resultText").textContent = order
         ? [
             `訂單已成立${order.no ? "：" + order.no : ""}`,
@@ -1357,21 +1361,56 @@
             order.warning ? `注意：${order.warning}` : "",
           ].filter(Boolean).join("\n")
         : "停在訂單確認頁，還沒送出訂單；付款不會自動按。" + (result.url ? `\n${result.url}` : "");
+      const refund = $("resultRefund");
+      if (calendar && calendar.refund) {
+        refund.textContent = "取消規則：" + calendar.refund;
+        refund.classList.remove("hidden");
+      } else {
+        refund.textContent = "";
+        refund.classList.add("hidden");
+      }
       $("resultImage").src = "data:image/jpeg;base64," + result.image;
+      const actions = calendarActions(calendar);
       if (order && order.paymentUrl) {
         $("resultButtons").replaceChildren(el("a", {
           class: "btn btn-primary", href: order.paymentUrl, target: "_blank", rel: "noopener", text: "開啟會員中心（待付款）",
-        }));
+        }), ...actions);
         $("modal").classList.remove("hidden");
         return;
       }
-      $("resultButtons").replaceChildren(...(result.buttons || [])
+      $("resultButtons").replaceChildren(...actions, ...(result.buttons || [])
         .filter((label) => !["×", "OK", "No", "Cancel"].includes(label))
         .map((label) => {
           const paying = label.includes("付款") || label.includes("支付");
           return el("button", { type: "button", class: "btn " + (paying ? "btn-danger" : "btn-primary"), text: label, onclick: () => press(label) });
         }));
       $("modal").classList.remove("hidden");
+    }
+
+    function calendarActions(calendar) {
+      if (!calendar) return [];
+      const actions = [];
+      if (calendar.googleUrl) {
+        actions.push(el("a", {
+          class: "btn", href: calendar.googleUrl, target: "_blank", rel: "noopener", text: "加入 Google 行事曆",
+        }));
+      }
+      if (calendar.ics) {
+        actions.push(el("button", { type: "button", class: "btn", text: "下載 .ics", onclick: () => downloadIcs(calendar) }));
+      }
+      return actions;
+    }
+
+    function downloadIcs(calendar) {
+      const blob = new Blob([calendar.ics], { type: "text/calendar;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = calendar.filename || "booking.ics";
+      document.body.append(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1500);
     }
 
     async function press(label) {
