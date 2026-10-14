@@ -5,8 +5,11 @@ from __future__ import annotations
 import re
 from datetime import date, timedelta
 
+from sportflex.core.calendar import calendar_lines
 from sportflex.core.models import Slot, slot_matches
+from sportflex.core.routine import weekday_token
 from sportflex.core.rules import next_release
+from sportflex.core.snipe_stats import stats_lines
 from sportflex.core.venue import Venue
 
 PERIODS = {
@@ -180,6 +183,25 @@ def parse_snipe_tokens(tokens: list[str]) -> list[dict]:
     return targets
 
 
+def parse_weekly_args(tokens: list[str]) -> dict:
+    """`/weekly 二四 20:00` or `/weekly 週二 週四 A 19:00`. `/weekly off` clears it."""
+    if len(tokens) == 1 and tokens[0].casefold() in {"off", "stop", "停", "停止", "停用"}:
+        return {"stop": True}
+    weekdays: list[int] = []
+    rest: list[str] = []
+    for token in tokens:
+        days = weekday_token(token)
+        if days is not None:
+            for day in days:
+                if day not in weekdays:
+                    weekdays.append(day)
+            continue
+        rest.append(token)
+    if not weekdays:
+        raise ValueError("請給星期，例如 /weekly 二四 20:00")
+    return {"stop": False, "weekdays": weekdays, "targets": parse_snipe_tokens(rest)}
+
+
 def parse_watch_args(tokens: list[str], today: date) -> dict:
     """`/watch off` stops. Otherwise a date, an optional period, and an optional court name."""
     if len(tokens) == 1 and tokens[0].casefold() in {"off", "stop", "停", "停止"}:
@@ -333,6 +355,30 @@ def format_snipe(venue_name: str, state: dict) -> str:
         lines.append(f"・{item.get('name') or '任一場'} {item.get('time')}{origin}{extra}")
     if state.get("running"):
         lines.append("看到空檔會送出訂單，付款要自己完成。取消：/cancel")
+    if state.get("source") == "routine" and state.get("running"):
+        lines.append("這一波是每週固定自動排上的。")
+    return "\n".join(lines)
+
+
+def format_routine(venue_name: str, state: dict) -> str:
+    if not state.get("enabled"):
+        return (
+            f"{venue_name} 還沒有每週固定時段\n"
+            "設定：/weekly 二四 20:00\n"
+            "指定場地：/weekly 二四 A 19:00\n"
+            "停用：/weekly off"
+        )
+    lines = [f"{venue_name} {state.get('label') or '每週固定'}"]
+    release = state.get("release") or {}
+    if state.get("skipDate") and state.get("skipDate") == release.get("targetDate"):
+        lines.append(f"這一波 {release.get('targetLabel', '')} 已取消，之後符合的日子仍會自動排。")
+    elif state.get("due"):
+        lines.append(
+            f"下一波 {release.get('targetLabel', '')} 會在 {release.get('opensLabel', '')} 前自動排好。"
+        )
+    else:
+        lines.append(f"下一波 {release.get('targetLabel', '')} 不是選定的星期，到了會再排。")
+    lines.append("停用：/weekly off")
     return "\n".join(lines)
 
 
@@ -345,9 +391,14 @@ def format_watch(venue_name: str, state: dict) -> str:
             "指定場地：/watch 明天 19:00 A\n"
             "停止：/watch off"
         )
-    window = "–".join(part for part in (spec.get("timeFrom") or "", spec.get("timeTo") or "") if part)
-    court = spec.get("courtName") or ("指定場" if spec.get("courtId") else "任一場")
-    bits = [spec.get("category") or "", spec.get("date") or "", window or "全天", court]
+    targets = spec.get("targets") or []
+    if targets:
+        listed = "、".join(f"{item.get('name') or '任一場'} {item.get('time')}" for item in targets)
+        bits = [spec.get("category") or "", spec.get("date") or "", listed]
+    else:
+        window = "–".join(part for part in (spec.get("timeFrom") or "", spec.get("timeTo") or "") if part)
+        court = spec.get("courtName") or ("指定場" if spec.get("courtId") else "任一場")
+        bits = [spec.get("category") or "", spec.get("date") or "", window or "全天", court]
     lines = [f"盯場 {venue_name} " + " ".join(bit for bit in bits if bit)]
     lines.append("看到空檔會送出訂單，付款要自己完成。停止：/watch off")
     log = state.get("log") or []
@@ -356,10 +407,10 @@ def format_watch(venue_name: str, state: dict) -> str:
     return "\n".join(lines)
 
 
-def format_runs(runs: list[dict]) -> str:
+def format_runs(runs: list[dict], stats: dict | None = None) -> str:
     if not runs:
         return "最近沒有開搶紀錄"
-    lines = ["最近開搶"]
+    lines = ["最近開搶", *stats_lines(stats or {})]
     for run in runs[:8]:
         result = RUN_RESULTS.get(run.get("result") or "", run.get("result") or "")
         lines.append(
@@ -383,6 +434,7 @@ def format_grab(result: dict) -> str:
         lines.append(order.get("paymentUrl") or "請到會員中心 → 待付款")
         if order.get("carrier"):
             lines.append(f"發票請選手機載具 {order['carrier']}")
+        lines.extend(calendar_lines(result))
         if order.get("warning"):
             lines.append(f"注意：{order['warning']}")
     else:

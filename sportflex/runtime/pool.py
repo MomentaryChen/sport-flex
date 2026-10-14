@@ -12,11 +12,13 @@ from sportflex.core.rules import quota_reason
 from sportflex.core.venue import Venue, get_venue, load_venues
 from sportflex.core.identity import server_label
 from sportflex.runtime.telegram_bot import TelegramBot
+from sportflex.core.routine import describe_routine
 from sportflex.runtime.telegram_cmd import (
     filter_courts,
     format_courts,
     format_grab,
     format_release,
+    format_routine,
     format_runs,
     format_slots,
     format_snipe,
@@ -70,6 +72,12 @@ class WorkerPool:
                 f"Telegram 已啟用，這台是 {server_label()}：登入失效會傳驗證碼（圖片會標這台名稱）",
                 flush=True,
             )
+        backups = [name for name in getattr(self.notifier, "channels", ()) if name != "Telegram"]
+        if backups:
+            print(
+                f"備援通知已啟用：{'、'.join(backups)}。搶到、付款提醒和登出會一併送出；驗證碼仍只走 Telegram。",
+                flush=True,
+            )
 
     def stop(self) -> None:
         if self.bot:
@@ -115,6 +123,9 @@ class WorkerPool:
             state = "瀏覽器無法使用" if worker.startup_error else "已登入" if worker.session.get("loggedIn") else "未登入"
             armed = [_armed_label(job.state()) for job in worker.snipes.values() if job.active]
             extra = f"，搶訂 {'、'.join(armed)}" if armed else ""
+            weekly = [describe_routine(item) for item in worker._routines.values() if item]
+            if weekly:
+                extra += "，" + "、".join(weekly)
             if worker.watch and worker.watch.running:
                 spec = worker.watch.spec
                 extra += f"，盯場 {spec.get('date', '')} {spec.get('timeFrom', '')}".rstrip()
@@ -150,6 +161,24 @@ class WorkerPool:
         venue, worker, category = self._target(account_id, venue_id, category)
         board = worker.board(venue, category, query_date)
         return format_slots(venue.display_name, board, time_from, time_to)
+
+    def routine_text(self, account_id: str | None, venue_id: str | None) -> str:
+        venue, worker, _category = self._target(account_id, venue_id, None)
+        return format_routine(venue.display_name, worker.routine_state(venue))
+
+    def set_routine_text(
+        self, account_id: str | None, venue_id: str | None, category: str | None, spec: dict
+    ) -> str:
+        venue, worker, category = self._target(account_id, venue_id, category)
+        resolved = self._resolve_targets(worker, venue, category, spec["targets"])
+        state = worker.set_routine(
+            venue, {"category": category, "weekdays": spec["weekdays"], "targets": resolved}
+        )
+        return format_routine(venue.display_name, state)
+
+    def clear_routine_text(self, account_id: str | None, venue_id: str | None) -> str:
+        venue, worker, _category = self._target(account_id, venue_id, None)
+        return format_routine(venue.display_name, worker.set_routine(venue, None))
 
     def snipe_text(self, account_id: str | None, venue_id: str | None) -> str:
         venue, worker, _category = self._target(account_id, venue_id, None)
@@ -209,7 +238,8 @@ class WorkerPool:
         if account_id and account_id not in self.workers:
             raise ValueError("找不到帳號 " + account_id)
         runs = self.events.snipe_runs(account=account_id or "", days=14, limit=8)
-        return format_runs(runs)
+        stats = self.events.snipe_stats(account=account_id or "", days=14)
+        return format_runs(runs, stats)
 
     def preview_book(
         self,

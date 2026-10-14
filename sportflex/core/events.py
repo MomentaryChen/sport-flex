@@ -7,6 +7,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+from sportflex.core.snipe_stats import empty_stats, offset_from_samples, summarize_runs
 from sportflex.paths import OUTPUT_DIR
 
 DB_PATH = OUTPUT_DIR / "sportflex.db"
@@ -134,6 +135,37 @@ class EventStore:
         )
         return [{**row, "targets": json.loads(row["targets"])} for row in rows]
 
+    def released_secs(self, *, account: str = "", venue: str = "", days: float = RETENTION_DAYS) -> list[float]:
+        where, args = _scope(account, venue, days)
+        where.append("released_sec IS NOT NULL")
+        rows = self._read(f"SELECT released_sec FROM snipe_runs WHERE {' AND '.join(where)}", tuple(args))
+        return [float(row["released_sec"]) for row in rows]
+
+    def snipe_stats(self, *, account: str = "", venue: str = "", days: float = RETENTION_DAYS) -> dict:
+        """Hit rate, how many seconds after the advertised open the site actually releases,
+        and which named court is booked most often. The offset is the median release time
+        once there are enough waves; a thin account falls back to the whole venue."""
+        runs = self.snipe_runs(account=account, venue=venue, days=days, limit=1000)
+        stats = summarize_runs(runs)
+        stats["days"] = days
+        primary = [float(run["released_sec"]) for run in runs if run.get("released_sec") is not None]
+        offset = offset_from_samples(primary)
+        scope = "filter" if offset is not None else ""
+        samples = len(primary)
+        if offset is None and account:
+            wider = self.released_secs(venue=venue, days=days)
+            wider_offset = offset_from_samples(wider)
+            if wider_offset is not None:
+                offset, scope, samples = wider_offset, "venue", len(wider)
+        stats["offsetSec"] = offset
+        stats["offsetScope"] = scope
+        stats["offsetSamples"] = samples
+        return stats
+
+    def release_offset_sec(self, *, venue: str = "", account: str = "", days: float = RETENTION_DAYS) -> float:
+        """Seconds after opens_at to send the first query. 0 keeps today's behaviour."""
+        return float(self.snipe_stats(account=account, venue=venue, days=days)["offsetSec"] or 0.0)
+
     def purge(self) -> None:
         cutoff = time.time() - self.retention_days * 86400
         self._purged_at = time.time()
@@ -170,6 +202,14 @@ class NullEventStore(EventStore):
 
     def record_snipe_run(self, run: dict) -> None:
         pass
+
+    def snipe_stats(self, **kwargs) -> dict:
+        stats = empty_stats()
+        stats["days"] = kwargs.get("days", RETENTION_DAYS)
+        return stats
+
+    def release_offset_sec(self, **kwargs) -> float:
+        return 0.0
 
 
 def _scope(account: str, venue: str, days: float) -> tuple[list[str], list]:

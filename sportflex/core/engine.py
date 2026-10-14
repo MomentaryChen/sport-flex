@@ -6,6 +6,7 @@ from dataclasses import asdict
 from datetime import datetime, timedelta
 from typing import Callable
 
+from sportflex.core.calendar import booking_calendar, calendar_lines
 from sportflex.core.coord import Coordinator, nearest_times
 from sportflex.core.events import EventStore, NullEventStore
 from sportflex.core.models import Court, Slot, slot_bounds, slot_matches
@@ -48,6 +49,11 @@ def _no_alert(title: str, body: str) -> None:
 
 def _no_logout() -> None:
     pass
+
+
+def _no_watch(_spec: dict) -> bool | None:
+    """Snipe jobs without a worker cannot start a watch. None keeps the manual reminder."""
+    return None
 
 
 LOGIN_DROPPED_WHILE_FIRING = "搶訂中登入失效，請立刻在網頁上重新登入，系統會繼續搶到截止為止。"
@@ -157,7 +163,7 @@ def court_public(court: Court) -> dict:
 def grab(provider: Provider, venue: Venue, court: Court, query_date: str, slot: Slot) -> dict:
     """Submit one booking and stop before payment."""
     snapshot = provider.submit(court, query_date, slot)
-    return {
+    result = {
         "ok": True,
         "venue": venue.id,
         "venueName": venue.display_name,
@@ -167,6 +173,10 @@ def grab(provider: Provider, venue: Venue, court: Court, query_date: str, slot: 
         "price": slot.price,
         **public_snapshot(snapshot),
     }
+    calendar = booking_calendar(venue, result)
+    if calendar:
+        result["calendar"] = calendar
+    return result
 
 
 def public_snapshot(snapshot: dict) -> dict:
@@ -197,6 +207,7 @@ def announce_grab(notifier: Notifier, account_label: str, result: dict) -> None:
         lines.append(f"請立即到長佳網站「會員中心 → 待付款」付款{deadline}。")
     if order.get("carrier"):
         lines.append(f"發票請選「手機載具」，填 {order['carrier']}")
+    lines.extend(calendar_lines(result))
     if order.get("warning"):
         lines.append(f"注意：{order['warning']}")
     notifier.send(f"✅ 搶到 {result['venueName']} {result['court']}", head + "\n".join(lines))
@@ -217,6 +228,7 @@ class SnipeJob:
         on_alert: Alert = _no_alert,
         events: EventStore | None = None,
         on_logout: Callable[[], None] = _no_logout,
+        on_watch: Callable[[dict], bool | None] = _no_watch,
         coord: Coordinator | None = None,
     ) -> None:
         self.venue = venue
@@ -225,6 +237,7 @@ class SnipeJob:
         self.on_grab = on_grab
         self.on_alert = on_alert
         self.on_logout = on_logout  # the worker starts a Telegram re-login
+        self.on_watch = on_watch  # True when the missed targets were turned into a watch
         self.coord = coord  # shared with the other accounts, so they don't submit the same cell
         self.events = events or NullEventStore()
         self.spec: dict | None = None
@@ -236,6 +249,8 @@ class SnipeJob:
         self._alerted: set[str] = set()
         self._run: dict | None = None  # timings of the current wave, written to snipe_runs when it ends
         self._clock = (datetime.now(), 0.0)  # (the tick's `now`, monotonic at that tick) for _sec()
+        self._offset_sec: float | None = None  # cached first-query offset for this wave
+        self._offset_noted = False
 
     @property
     def rules(self):
@@ -245,11 +260,18 @@ class SnipeJob:
     def active(self) -> bool:
         return bool(self.spec) and self.spec["phase"] in ACTIVE_PHASES
 
-    def arm(self, category: str, raw_targets: list, courts: list[tuple[str, str]] | None = None) -> dict:
+    def arm(
+        self,
+        category: str,
+        raw_targets: list,
+        courts: list[tuple[str, str]] | None = None,
+        source: str = "manual",
+        now: datetime | None = None,
+    ) -> dict:
         if category not in self.venue.categories:
             raise ValueError(f"{self.venue.display_name} 沒有 {category}")
         targets = validate_targets(self.rules, raw_targets)
-        release = next_release(self.rules)
+        release = next_release(self.rules, now)
         notes: list[str] = []
         if self.coord is not None:
             targets, notes = self.coord.assign(
@@ -266,6 +288,7 @@ class SnipeJob:
             "targetDate": release["targetDate"],
             "opensAt": release["opensAt"],
             "phase": "armed",
+            "source": source,
             "targets": targets,
             "deadline": (
                 datetime.fromisoformat(release["opensAt"]) + timedelta(minutes=self.rules.snipe_deadline_min)
@@ -274,27 +297,36 @@ class SnipeJob:
         self._prepared = False
         self._next_at = 0
         self._run = None
+        self._offset_sec = None
+        self._offset_noted = False
         self._reset_alerts()
         self.store.save(self.spec)
         names = "、".join(f"{item['name']} {item['time']}" for item in targets)
+        if source == "routine":
+            text = f"每週時段已排上 {release['targetLabel']} {names}，{release['opensLabel']} 開搶"
+        else:
+            text = f"已設定 {release['targetLabel']} {names}，{release['opensLabel']} 開搶"
         self.log.note(
-            f"已設定 {release['targetLabel']} {names}，{release['opensLabel']} 開搶",
+            text,
             "armed",
             targetDate=release["targetDate"],
             opensAt=release["opensAt"],
             targets=targets,
+            source=source,
         )
         if notes:
             self.log.note("；".join(notes), "coordinated", targets=targets)
         return self.state()
 
-    def cancel(self) -> dict:
+    def cancel(self, reason: str = "已取消搶訂") -> dict:
         self._drop_plan(release_claims=True)
         self.spec = None
         self._prepared = False
         self._run = None
+        self._offset_sec = None
+        self._offset_noted = False
         self.store.clear()
-        self.log.note("已取消搶訂", "cancelled")
+        self.log.note(reason, "cancelled")
         return self.state()
 
     def restore(self) -> None:
@@ -308,6 +340,8 @@ class SnipeJob:
         saved["phase"] = "armed"
         saved["opensAt"] = release["opensAt"]
         self.spec = saved
+        self._offset_sec = None
+        self._offset_noted = False
         self._reset_alerts()
         self._publish()
         self.log.note("恢復尚未完成的搶訂設定", "restored", targetDate=saved["targetDate"])
@@ -320,6 +354,7 @@ class SnipeJob:
             "running": phase in ACTIVE_PHASES,
             "phase": phase,
             "category": self.spec["category"] if self.spec else "",
+            "source": (self.spec or {}).get("source") or "",
             "release": next_release(self.rules),
             "targets": [_public_target(item) for item in (self.spec["targets"] if self.spec else [])],
             "log": self.log.lines[-12:],
@@ -334,7 +369,11 @@ class SnipeJob:
         if now < opens_at - timedelta(seconds=self.rules.prepare_lead_sec):
             self._check_login(provider, spec, now, opens_at)
             return
-        if now < opens_at:
+        # The site usually opens a little after opens_at. An early query counts as
+        # "not released" and the next look waits a full poll, so the first query
+        # waits out the offset learned from past snipe_runs.
+        fire_at = opens_at + timedelta(seconds=self.release_offset_sec())
+        if now < fire_at:
             if spec["phase"] == "need_login" and time.time() < self._next_at:
                 return
             self._prepare(provider, spec)
@@ -407,6 +446,7 @@ class SnipeJob:
         spec["phase"] = "ready"
         self.store.save(spec)
         self.log.note(f"已停在 {first.name} 的預約頁，等 {self.rules.release_time}", "ready", court=first.name)
+        self._note_offset()
 
     def _existing_holds(self, provider: Provider, spec: dict, courts: list[Court]) -> list[dict]:
         """Bookings already on the release day. Counted before we park, so the first submit stays fast."""
@@ -694,9 +734,18 @@ class SnipeJob:
         targets = (spec or {}).get("targets", [])
         booked = [item for item in targets if item.get("status") == "booked"]
         missed = [item for item in targets if item.get("status") != "booked"]
+        watch_spec = watch_spec_for_misses(spec, self.rules) if spec else None
+        adopted = self.on_watch(watch_spec) if watch_spec else None
+        if adopted:
+            self.log.note("沒搶到的時段已改盯場", "watch_handoff")
         if missed:
             missed_names = "、".join(f"{item['name']} {item['time']}" for item in missed)
-            tail = f"{text}。可以到網頁看執行紀錄，或改用盯場等人退訂。"
+            if adopted:
+                tail = f"{text}。沒搶到的已改盯場，有人退訂會再搶。"
+            elif adopted is False:
+                tail = f"{text}。已經有盯場在跑，這次沒有改掉。"
+            else:
+                tail = f"{text}。可以到網頁看執行紀錄，或改用盯場等人退訂。"
             if booked:
                 got = "、".join(f"{item['bookedName'] or item['name']} {item['time']}" for item in booked)
                 self.on_alert(
@@ -708,6 +757,40 @@ class SnipeJob:
                     f"沒搶到 {self.venue.display_name} {spec['targetDate']}",
                     f"{missed_names}\n{tail}",
                 )
+
+    def release_offset_sec(self) -> float:
+        """Seconds after opens_at for the first query. Cached so a wave doesn't move its own goal."""
+        if self._offset_sec is None:
+            try:
+                self._offset_sec = float(
+                    self.events.release_offset_sec(venue=self.venue.id, account=self.account_id) or 0.0
+                )
+            except Exception:
+                self._offset_sec = 0.0
+        return self._offset_sec
+
+    def next_action_in(self, now: datetime) -> float | None:
+        """Seconds until the next thing this job must do, so the worker can wake on time."""
+        spec = self.spec
+        if not spec or spec["phase"] not in ACTIVE_PHASES:
+            return None
+        if spec["phase"] == "firing":
+            return self._next_at - time.time()
+        fire_at = datetime.fromisoformat(spec["opensAt"]) + timedelta(seconds=self.release_offset_sec())
+        fire_in = (fire_at - now).total_seconds()
+        if spec["phase"] == "need_login":
+            return min(fire_in, self._next_at - time.time())
+        return fire_in
+
+    def _note_offset(self) -> None:
+        if self._offset_noted:
+            return
+        self._offset_noted = True
+        offset = self.release_offset_sec()
+        if not offset:
+            return
+        when = f"開搶後 {offset:.2f} 秒" if offset > 0 else f"開搶前 {abs(offset):.2f} 秒"
+        self.log.note(f"第一次查詢會在{when}送出，對齊最近的釋出時間", "offset", offsetSec=offset)
 
     def _sec(self) -> float:
         """Seconds since release on the tick's clock (tests pass a fake `now`)."""
@@ -768,6 +851,44 @@ class SnipeJob:
         self._alerted.clear()
 
 
+def watch_spec_for_misses(spec: dict, rules) -> dict | None:
+    """A watch for the targets a snipe did not book. Skipped targets stay skipped."""
+    missed = [
+        item
+        for item in spec.get("targets") or []
+        if item.get("status") not in {"booked", "skipped"} and item.get("time")
+    ]
+    if not missed or not spec.get("targetDate") or not spec.get("category"):
+        return None
+    targets = [
+        {
+            "courtId": item.get("courtId") or "",
+            "name": item.get("name") or item.get("courtId") or "任一場",
+            "time": item["time"],
+        }
+        for item in missed
+    ]
+    court_ids = {item["courtId"] for item in targets}
+    single = targets[0]["courtId"] if len(court_ids) == 1 and targets[0]["courtId"] else ""
+    return {
+        "category": spec["category"],
+        "date": spec["targetDate"],
+        "targets": targets,
+        "timeFrom": min(item["time"] for item in targets),
+        "timeTo": slot_end(max(item["time"] for item in targets), rules.slot_hours),
+        "courtId": single,
+        "courtName": targets[0]["name"] if single else "",
+    }
+
+
+def _watch_label(spec: dict) -> str:
+    targets = spec.get("targets") or []
+    if targets:
+        return "、".join(f"{item.get('name') or '任一場'} {item.get('time')}" for item in targets)
+    window = f"{spec.get('timeFrom') or ''}-{spec.get('timeTo') or ''}".strip("-")
+    return window
+
+
 class WatchJob:
     """Poll an already-released day and grab the first open slot that matches."""
 
@@ -780,6 +901,7 @@ class WatchJob:
         events: EventStore | None = None,
         on_logout: Callable[[], None] = _no_logout,
         account_id: str = "",
+        on_change: Callable[[dict], None] | None = None,
     ) -> None:
         if spec.get("category") not in venue.categories:
             raise ValueError(f"{venue.display_name} 沒有 {spec.get('category')}")
@@ -788,6 +910,7 @@ class WatchJob:
         self.on_grab = on_grab
         self.on_alert = on_alert
         self.on_logout = on_logout  # the worker starts a Telegram re-login
+        self.on_change = on_change or (lambda _spec: None)
         self._alerted: set[str] = set()
         self.log = JobLog(_sink(events or NullEventStore(), account_id, venue.id, "watch"))
         self.running = True
@@ -795,8 +918,7 @@ class WatchJob:
         rules = venue.rules
         self.interval = max(rules.watch_min_interval_sec, int(spec.get("interval") or rules.watch_interval_sec))
         self.log.note(
-            f"開始盯 {venue.display_name} {spec['category']} {spec.get('date')} "
-            f"{spec.get('timeFrom') or ''}-{spec.get('timeTo') or ''}",
+            f"開始盯 {venue.display_name} {spec['category']} {spec.get('date')} {_watch_label(spec)}",
             "watch_started",
             spec=spec,
         )
@@ -849,9 +971,14 @@ class WatchJob:
         except Exception as exc:
             self.log.note(f"搶位失敗：{exc}", "error", "error")
             return
-        self.running = False
+        still = _drop_watch_target(self.spec, court_id, slot) and bool(self.spec.get("targets"))
+        if not still:
+            self.running = False
         self.log.note(f"已送到 {result['url']}", "booked", court=result["court"], time=result["time"])
         self.on_grab(result)
+        if still:
+            self.log.note(f"還有 {len(self.spec['targets'])} 個時段要盯", "watch_remain")
+            self.on_change(self.spec)
 
     def _alert_once(self, kind: str, title: str, body: str) -> None:
         if kind in self._alerted:
@@ -871,19 +998,56 @@ def _match_start(slots: list[Slot], wanted: str):
     return None
 
 
+def _slot_start(slot: Slot) -> str:
+    return slot.time.split("-", 1)[0].strip()
+
+
+def _watch_wants(spec: dict, court_id: str, slot: Slot) -> bool:
+    """A target list matches those starts exactly. Otherwise one court and a time window."""
+    targets = spec.get("targets") or []
+    if targets:
+        start = _slot_start(slot)
+        for item in targets:
+            if item.get("time") != start:
+                continue
+            wanted = item.get("courtId") or ""
+            if wanted and wanted != court_id:
+                continue
+            return True
+        return False
+    wanted = spec.get("courtId") or ""
+    if wanted and court_id != wanted:
+        return False
+    return slot_matches(slot, spec.get("timeFrom") or None, spec.get("timeTo") or None)
+
+
+def _drop_watch_target(spec: dict, court_id: str, slot: Slot) -> bool:
+    """Remove one booked target. False when this watch is a time window, not a target list."""
+    targets = spec.get("targets")
+    if not targets:
+        return False
+    start = _slot_start(slot)
+    for index, item in enumerate(targets):
+        if item.get("time") != start:
+            continue
+        wanted = item.get("courtId") or ""
+        if wanted and wanted != court_id:
+            continue
+        del targets[index]
+        return True
+    return True
+
+
 def _first_open(courts: list[dict], spec: dict, rules=None):
     """First open slot in range that still fits the day's quota. Returns (court_id, slot, blocked)."""
-    wanted = spec.get("courtId") or ""
     held = holds_from_board(courts)
     blocked = None
     for court in courts:
-        if wanted and court["id"] != wanted:
-            continue
         for raw in court["slots"]:
             slot = Slot(**raw)
             if not slot.bookable:
                 continue
-            if not slot_matches(slot, spec.get("timeFrom") or None, spec.get("timeTo") or None):
+            if not _watch_wants(spec, court["id"], slot):
                 continue
             _start, _end, hours = slot_bounds(slot.time)
             if rules is not None:

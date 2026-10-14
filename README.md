@@ -58,9 +58,11 @@ categories: [羽球]
 
 ## 其他
 
+- 每週固定時段：例如每週二、四 20:00 任一場。套用一次之後，每天 06:00 釋出前會自動排上第 14 天，不必再每天手動設。Telegram：`/weekly 二四 20:00`。
 - 盯已經開放、目前額滿的時段，一有空檔就送出訂單。
 - 同一個平台可以掛多個帳號，各自的瀏覽器同時搶。
 - 有設定 Telegram 時，驗證碼和搶到的結果會傳過去。在 `.env` 加上 `SPORT_FLEX_TELEGRAM_BOT_TOKEN` 與 `SPORT_FLEX_TELEGRAM_CHAT_ID`。
+- Telegram 的備援：`SPORT_FLEX_DISCORD_WEBHOOK_URL`（Discord webhook），以及 `SPORT_FLEX_NTFY_URL`（ntfy 主題網址，例如 `https://ntfy.sh/你的主題`；私人主題再加 `SPORT_FLEX_NTFY_TOKEN`）。有填就會和 Telegram 一起送出搶到、付款提醒和登出，其中一條送不到時另一條仍會到。驗證碼圖片仍只走 Telegram，因為要能直接回覆。ntfy 預設優先級 4，可用 `SPORT_FLEX_NTFY_PRIORITY` 設成 1–5。
 - `python -m sportflex --help` 可以用指令查場、看時段、送出預約。
 - Docker：`docker compose -f infra/docker-compose.yml up -d --build`，然後開 `http://127.0.0.1:8765/`。
 

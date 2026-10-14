@@ -10,6 +10,7 @@ from sportflex.runtime.telegram_cmd import (
     parse_book_tokens,
     parse_slots_args,
     parse_snipe_tokens,
+    format_watch,
     parse_watch_args,
     parse_window,
     resolve_date,
@@ -118,3 +119,22 @@ def test_format_grab_includes_payment_link():
     assert "https://pay.example" in text
     assert "10 分鐘" in text
     assert "/ABC1234" in text
+
+
+def test_format_watch_lists_exact_targets():
+    text = format_watch(
+        "測試中心",
+        {
+            "running": True,
+            "spec": {
+                "category": "羽球",
+                "date": "2026-10-20",
+                "timeFrom": "19:00",
+                "timeTo": "22:00",
+                "targets": [{"name": "A", "time": "19:00"}, {"time": "21:00"}],
+            },
+            "log": [],
+        },
+    )
+    assert "A 19:00、任一場 21:00" in text
+    assert "19:00–22:00" not in text
