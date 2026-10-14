@@ -4,11 +4,14 @@ import argparse
 import sys
 
 from sportflex.core.accounts import load_accounts, pick_account
+from sportflex.core.calendar import calendar_lines, save_ics
 from sportflex.core.engine import grab
 from sportflex.core.events import EventStore
+from sportflex.core.snipe_stats import stats_lines
 from sportflex.core.models import iter_dates, slot_bounds, slot_matches
 from sportflex.core.rules import quota_reason
 from sportflex.core.venue import get_venue, load_venues
+from sportflex.paths import OUTPUT_DIR
 from sportflex.providers import create_provider, provider_class
 from sportflex.runtime.browser import open_page
 
@@ -189,7 +192,11 @@ def _history(args) -> int:
     store = EventStore()
     scope = {"account": args.account or "", "venue": args.venue or "", "days": args.days}
     runs = store.snipe_runs(**scope, limit=args.limit)
-    print(f"開搶結果（最近 {args.days:g} 天，秒數 = 開搶後幾秒）")
+    stats = store.snipe_stats(**scope)
+    print(f"開搶統計（最近 {args.days:g} 天）")
+    for line in stats_lines(stats) or ["  （沒有紀錄）"]:
+        print(f"  {line}")
+    print("\n開搶結果（秒數 = 開搶後幾秒）")
     if not runs:
         print("  （沒有紀錄）")
     for run in runs:
@@ -254,6 +261,11 @@ def _book(args) -> int:
             print(f"請{minutes}付款，逾時會被取消：{order.get('paymentUrl') or '會員中心'} → 點「待付款」→ 前往付款")
             if order.get("carrier"):
                 print(f"發票請選「手機載具」，填 {order['carrier']}")
+            for line in calendar_lines(result):
+                print(line)
+            calendar = result.get("calendar")
+            if calendar:
+                print(f"行事曆檔：{save_ics(calendar, OUTPUT_DIR)}")
             if order.get("warning"):
                 print(f"注意：{order['warning']}")
             print("程式不會付款。付款完成後按 Enter 關閉。")

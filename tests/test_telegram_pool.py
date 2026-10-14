@@ -72,6 +72,11 @@ def pool(tmp_path, monkeypatch):
     return built
 
 
+def test_accounts_share_one_coordinator(pool):
+    coords = {id(worker.coord) for worker in pool.workers.values()}
+    assert coords == {id(pool.coord)} and pool.coord is not None
+
+
 def test_slots_and_release(pool):
     text = pool.slots_text(None, None, "羽球", "2026-10-20", "18:00", "23:00")
     assert "19:00 - 20:00  羽球場_A $490" in text
@@ -88,6 +93,19 @@ def test_status_names_this_server(pool, monkeypatch):
     text = pool.status_text()
     assert text.startswith("這台：docker")
     assert pool.meta()["instance"] == "docker"
+
+
+def test_status_includes_weekly_pattern(pool):
+    pool.worker._routines["xindian"] = {
+        "category": "羽球",
+        "weekdays": [1, 3],
+        "targets": [{"courtId": "", "name": "任一場", "time": "20:00"}],
+        "skipDate": "",
+    }
+    assert "每週二、四 20:00 任一場" in pool.status_text()
+    text = pool.routine_text(None, None)
+    assert "每週二、四 20:00 任一場" in text
+    assert "/weekly off" in text
 
 
 def test_arm_cancel_and_status(pool):

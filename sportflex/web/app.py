@@ -97,6 +97,13 @@ class SnipeBody(Target):
     targets: list[SnipeTarget] = Field(default_factory=list)
 
 
+class RoutineBody(Target):
+    enabled: bool
+    category: str | None = None
+    weekdays: list[int] = Field(default_factory=list)
+    targets: list[SnipeTarget] = Field(default_factory=list)
+
+
 class WatchBody(Target):
     enabled: bool
     category: str | None = None
@@ -237,6 +244,25 @@ def snipe(request: Request, body: SnipeBody):
     return {"ok": True, **worker.set_snipe(found, body.category, targets), "lastGrab": worker.last_grab}
 
 
+@app.get("/api/routine")
+def routine_state(request: Request, venue: str | None = None, account: str | None = None):
+    found, worker = pool(request).resolve(venue, account)
+    return {"ok": True, **worker.routine_state(found)}
+
+
+@app.post("/api/routine")
+def routine(request: Request, body: RoutineBody):
+    found, worker = pool(request).resolve(body.venue, body.account)
+    spec = None
+    if body.enabled:
+        spec = {
+            "category": body.category or found.categories[0],
+            "weekdays": body.weekdays,
+            "targets": [item.model_dump() for item in body.targets],
+        }
+    return {"ok": True, **worker.set_routine(found, spec)}
+
+
 @app.get("/api/snipes")
 def snipes(request: Request):
     """Every armed or finished snipe across venues and accounts."""
@@ -262,6 +288,17 @@ def snipe_runs(request: Request, account: str = "", venue: str = "", days: float
     """One row per snipe wave: result and seconds after release for each step."""
     store = pool(request).events
     return {"ok": True, "runs": store.snipe_runs(account=account, venue=venue, days=days, limit=limit)}
+
+
+@app.get("/api/snipe-stats")
+def snipe_stats(request: Request, account: str = "", venue: str = "", days: float = 30):
+    """Hit rate, average seconds until the site releases, and which court is easiest to book.
+
+    `offsetSec` is the median release time (once there are enough waves). The snipe uses it
+    as the delay before the first query.
+    """
+    store = pool(request).events
+    return {"ok": True, "stats": store.snipe_stats(account=account, venue=venue, days=days)}
 
 
 @app.get("/api/watch")
@@ -291,6 +328,7 @@ async def events(request: Request, venue: str | None = None, account: str | None
         while not SHUTDOWN.is_set() and not await request.is_disconnected():
             payload = {
                 "snipe": worker.snipes[found.id].state(),
+                "routine": worker.routine_state(found),
                 "watch": worker.watch_state(),
                 "session": worker.session_info(),
                 "lastGrab": worker.last_grab,

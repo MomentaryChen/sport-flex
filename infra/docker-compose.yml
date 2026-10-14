@@ -20,7 +20,7 @@ services:
     stop_grace_period: 30s      # time for workers to finish and close Chrome
     shm_size: 1gb
     env_file:
-      - ../.env                 # SPORT_FLEX_* accounts and Telegram settings
+      - ../.env                 # SPORT_FLEX_* accounts, Telegram, Discord, and ntfy
     environment:
       TZ: Asia/Taipei
       SPORT_FLEX_CHROME_NO_SANDBOX: "1"

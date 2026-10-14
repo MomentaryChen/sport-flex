@@ -58,9 +58,11 @@ Change the short name whenever you like, for example “Court 1” or “Weekday
 
 ## Also
 
+- Weekly slots: for example every Tuesday and Thursday at 20:00, any court. After you save it once, the 14th day is armed automatically before each day’s 06:00 release. Telegram: `/weekly 二四 20:00`.
 - Watch slots that are already open but full, and place the order when one frees up.
 - One platform can have several accounts, each with its own browser, grabbing at the same time.
 - With Telegram configured, captchas and successful bookings are sent there. Add `SPORT_FLEX_TELEGRAM_BOT_TOKEN` and `SPORT_FLEX_TELEGRAM_CHAT_ID` to `.env`.
+- Backup channels: `SPORT_FLEX_DISCORD_WEBHOOK_URL` (a Discord webhook) and `SPORT_FLEX_NTFY_URL` (an ntfy topic URL such as `https://ntfy.sh/your-topic`; add `SPORT_FLEX_NTFY_TOKEN` for a private topic). When set, grab, payment, and logout notices are sent there together with Telegram, so one blocked channel does not hide the alert. Captcha photos stay on Telegram, because that chat can take a reply. ntfy uses priority 4 unless `SPORT_FLEX_NTFY_PRIORITY` is 1–5.
 - `python -m sportflex --help` lists commands to look up courts, slots, and place a booking.
 - Docker: `docker compose -f infra/docker-compose.yml up -d --build`, then open `http://127.0.0.1:8765/`.
 

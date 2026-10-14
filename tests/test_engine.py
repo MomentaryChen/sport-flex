@@ -1,9 +1,11 @@
+import time
 from datetime import datetime, timedelta
 
 import pytest
 
 from sportflex.core import engine
-from sportflex.core.engine import SnipeJob, WatchJob
+from sportflex.core.coord import Coordinator
+from sportflex.core.engine import SnipeJob, WatchJob, watch_spec_for_misses
 from sportflex.core.models import Availability, Court, Slot
 from sportflex.core.rules import BookingRules, next_release
 from sportflex.core.venue import Venue
@@ -705,3 +707,237 @@ def test_failed_or_cancelled_board_scan_is_not_cached():
 
     play(worker.stream_board(venue, "羽球", "2026-10-10")[0])
     assert calls == {"list": 2, "slots": 3}
+
+
+def _pair(venue):
+    coord = Coordinator()
+    me = SnipeJob(venue, "me", lambda result: None, coord=coord)
+    family = SnipeJob(venue, "family", lambda result: None, coord=coord)
+    return me, family
+
+
+def test_two_accounts_are_sent_to_different_courts(venue):
+    me, family = _pair(venue)
+    courts = [("A", "場A"), ("B", "場B")]
+    me.arm("羽球", [{"courtId": "", "time": "19:00"}], courts)
+    family.arm("羽球", [{"courtId": "", "time": "19:00"}], courts)
+    assert family.spec["targets"][0]["lane"] == 1 and family.spec["targets"][0]["time"] == "19:00"
+    me_provider = FakeProvider(released_date=me.spec["targetDate"])
+    family_provider = FakeProvider(released_date=family.spec["targetDate"])
+    me_provider.open = family_provider.open = {"A": ["19:00"], "B": ["19:00"]}
+    me._prepared = family._prepared = True
+    me.tick(me_provider, opens(me) + timedelta(seconds=1))
+    family.tick(family_provider, opens(family) + timedelta(seconds=1))
+    assert me_provider.submitted == [("A", me.spec["targetDate"], "19:00 - 20:00")]
+    assert family_provider.submitted == [("B", family.spec["targetDate"], "19:00 - 20:00")]
+
+
+def test_same_named_court_is_reassigned_before_the_wave(venue):
+    me, family = _pair(venue)
+    courts = [("A", "場A"), ("B", "場B")]
+    me.arm("羽球", [{"courtId": "A", "name": "場A", "time": "19:00"}], courts)
+    family.arm("羽球", [{"courtId": "A", "name": "場A", "time": "19:00"}], courts)
+    assert family.spec["targets"][0]["courtId"] == "B"
+    assert family.state()["targets"][0]["fromName"] == "場A"
+    assert any("錯開" in line for line in family.log.lines)
+
+
+def test_only_open_court_sends_the_other_account_to_another_time(venue):
+    me, family = _pair(venue)
+    courts = [("A", "場A"), ("B", "場B")]
+    me.arm("羽球", [{"courtId": "", "time": "19:00"}], courts)
+    family.arm("羽球", [{"courtId": "", "time": "19:00"}], courts)
+    me_provider = FakeProvider(released_date=me.spec["targetDate"])
+    family_provider = FakeProvider(released_date=family.spec["targetDate"])
+    me_provider.open = {"A": ["19:00"]}
+    family_provider.open = {"A": ["19:00", "20:00"]}
+    me._prepared = family._prepared = True
+    me.tick(me_provider, opens(me) + timedelta(seconds=1))
+    family.tick(family_provider, opens(family) + timedelta(seconds=1))
+    assert family_provider.submitted == []
+    assert family.spec["targets"][0]["time"] == "20:00"
+    family._next_at = 0
+    family.tick(family_provider, opens(family) + timedelta(seconds=2))
+    assert family_provider.submitted == [("A", family.spec["targetDate"], "20:00 - 21:00")]
+    assert me_provider.submitted[0][0] == "A" and "19:00" in me_provider.submitted[0][2]
+
+
+def test_cancelling_frees_the_cell_for_the_other_account(venue):
+    me, family = _pair(venue)
+    courts = [("A", "場A")]
+    me.arm("羽球", [{"courtId": "A", "name": "場A", "time": "19:00"}], courts)
+    family.arm("羽球", [{"courtId": "A", "name": "場A", "time": "19:00"}], courts)
+    assert family.spec["targets"][0]["time"] == "20:00"
+    me.cancel()
+    family.cancel()
+    family.arm("羽球", [{"courtId": "A", "name": "場A", "time": "19:00"}], courts)
+    assert family.spec["targets"][0]["time"] == "19:00" and "fromTime" not in family.spec["targets"][0]
+
+
+def _account_worker(venue):
+    from sportflex.core.accounts import Account
+    from sportflex.core.notify import ConsoleNotifier
+    from sportflex.runtime.worker import AccountWorker
+
+    return AccountWorker(
+        Account(id="me", provider="fake", username_env="U", password_env="P", profile="x"),
+        {venue.id: venue},
+        ConsoleNotifier(),
+    )
+
+
+class _WatchProbe:
+    def __init__(self):
+        self.calls = 0
+        self.running = True
+        self.log = self
+
+    def tick(self, _provider):
+        self.calls += 1
+
+    def note(self, *_args, **_kwargs):
+        pass
+
+
+def test_armed_snipe_keeps_the_watch_running(venue):
+    worker = _account_worker(venue)
+    job = worker.snipes[venue.id]
+    job.arm("羽球", [{"courtId": "A", "name": "A", "time": "19:00"}])
+    later = datetime.now(venue.rules.tz) + timedelta(hours=12)
+    job.spec["opensAt"] = later.isoformat()
+    job.spec["deadline"] = (later + timedelta(minutes=3)).isoformat()
+    job.tick = lambda provider, now=None: None
+    probe = _WatchProbe()
+    worker.watch = probe
+    worker._tick(FakeProvider())
+    assert probe.calls == 1 and worker.page_lock_reason() == ""
+
+
+def test_watch_pauses_only_around_release(venue):
+    worker = _account_worker(venue)
+    job = worker.snipes[venue.id]
+    job.arm("羽球", [{"courtId": "A", "name": "A", "time": "19:00"}])
+    job.tick = lambda provider, now=None: None
+    soon = datetime.now(venue.rules.tz) + timedelta(seconds=20)
+    job.spec["opensAt"] = soon.isoformat()
+    job.spec["phase"] = "armed"
+    probe = _WatchProbe()
+    worker.watch = probe
+    worker._tick(FakeProvider())
+    assert probe.calls == 0 and "暫停查表" in worker.page_lock_reason()
+
+    job.spec["phase"] = "firing"
+    job.spec["opensAt"] = (datetime.now(venue.rules.tz) + timedelta(hours=12)).isoformat()
+    worker._tick(FakeProvider())
+    assert probe.calls == 0
+
+
+def test_captcha_hold_still_pauses_an_armed_watch(venue):
+    worker = _account_worker(venue)
+    job = worker.snipes[venue.id]
+    job.arm("羽球", [{"courtId": "A", "name": "A", "time": "19:00"}])
+    later = datetime.now(venue.rules.tz) + timedelta(hours=12)
+    job.spec["opensAt"] = later.isoformat()
+    job.tick = lambda provider, now=None: None
+    probe = _WatchProbe()
+    worker.watch = probe
+    worker._hold_until = time.time() + 60
+    worker._tick(FakeProvider())
+    assert probe.calls == 0
+
+
+def test_idle_account_still_watches_and_checks_login(venue):
+    worker = _account_worker(venue)
+    worker.snipes[venue.id].cancel()
+    probe = _WatchProbe()
+    worker.watch = probe
+    worker._checked_at = 0
+    provider = FakeProvider()
+    worker._tick(provider)
+    assert probe.calls == 1 and worker.session["loggedIn"] is True
+
+
+def test_miss_turns_unbooked_targets_into_a_watch(venue, tmp_path, monkeypatch):
+    monkeypatch.setattr("sportflex.core.storage.WATCHES_DIR", tmp_path)
+    worker = _account_worker(venue)
+    job = worker.snipes[venue.id]
+    alerts = []
+    job.on_alert = lambda title, body: alerts.append((title, body))
+    job.arm(
+        "羽球",
+        [{"courtId": "A", "name": "A", "time": "19:00"}, {"courtId": "B", "name": "B", "time": "20:00"}],
+    )
+    provider = FakeProvider(released_date=job.spec["targetDate"])
+    provider.open = {"A": ["19:00"]}
+    job._prepared = True
+    job.tick(provider, opens(job) + timedelta(seconds=1))
+    job._next_at = 0
+    job.tick(provider, opens(job) + timedelta(minutes=venue.rules.snipe_deadline_min, seconds=1))
+    assert job.spec["phase"] == "done"
+    assert worker.watch and worker.watch.running
+    assert worker.watch.spec["date"] == job.spec["targetDate"]
+    assert worker.watch.spec["targets"] == [{"courtId": "B", "name": "B", "time": "20:00"}]
+    assert alerts[-1][0].startswith("部分搶到") and "已改盯場" in alerts[-1][1]
+    from sportflex.core.storage import WatchStore
+
+    saved = WatchStore("me").load()
+    assert saved["targets"][0]["time"] == "20:00" and saved["venue"] == venue.id
+
+
+def test_a_running_watch_is_not_replaced_by_a_miss(venue):
+    worker = _account_worker(venue)
+    kept = WatchJob(venue, {"category": "羽球", "date": "2026-10-01", "timeFrom": "18:00"}, lambda result: None)
+    worker.watch = kept
+    job = worker.snipes[venue.id]
+    alerts = []
+    job.on_alert = lambda title, body: alerts.append((title, body))
+    job.arm("羽球", [{"courtId": "A", "name": "A", "time": "19:00"}])
+    job._prepared = True
+    job.tick(FakeProvider(), opens(job) + timedelta(minutes=venue.rules.snipe_deadline_min, seconds=1))
+    assert worker.watch is kept and kept.spec["date"] == "2026-10-01"
+    assert "已經有盯場" in alerts[-1][1]
+
+
+def test_skipped_target_does_not_start_a_watch(venue):
+    watched = []
+    job = SnipeJob(venue, "me", lambda result: None, on_watch=lambda spec: watched.append(spec) or True)
+    job.arm("羽球", [{"courtId": "A", "name": "A", "time": "19:00"}])
+    provider = FakeProvider(released_date=job.spec["targetDate"])
+    provider.open = {"A": ["19:00"]}
+    provider.hours = 2
+    job._prepared = True
+    job.tick(provider, opens(job) + timedelta(seconds=1))
+    assert job.spec["phase"] == "done" and watched == []
+    assert watch_spec_for_misses(job.spec, venue.rules) is None
+
+
+def test_watch_targets_ignore_other_hours_and_keep_going():
+    venue = _fast_venue()
+    grabs = []
+    saved = []
+    provider = FakeProvider(released_date="2026-10-10")
+    provider.open = {"A": ["19:00", "20:00"]}
+    job = WatchJob(
+        venue,
+        {
+            "category": "羽球",
+            "date": "2026-10-10",
+            "targets": [
+                {"courtId": "A", "name": "場A", "time": "19:00"},
+                {"courtId": "B", "name": "場B", "time": "21:00"},
+            ],
+        },
+        grabs.append,
+        on_change=saved.append,
+    )
+    job.tick(provider)
+    assert provider.submitted == [("A", "2026-10-10", "19:00 - 20:00")]
+    assert job.running and [item["time"] for item in job.spec["targets"]] == ["21:00"]
+    assert saved and saved[-1]["targets"][0]["time"] == "21:00"
+    job._next_at = 0
+    job.tick(provider)
+    assert [item[0] for item in provider.submitted] == ["A"]
+    provider.open["B"] = ["21:00"]
+    job._next_at = 0
+    job.tick(provider)
+    assert provider.submitted[-1][0] == "B" and not job.running
