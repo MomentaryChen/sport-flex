@@ -120,7 +120,7 @@ class WorkerPool:
         return "\n".join(lines) or "沒有帳號"
 
     def venues_public(self) -> list[dict]:
-        return [{"id": venue.id, "name": venue.name} for venue in self.venues.values()]
+        return [{"id": venue.id, "name": venue.display_name} for venue in self.venues.values()]
 
     def categories(self, venue_id: str | None) -> list[str]:
         return list(self._venue(venue_id).categories)
@@ -134,7 +134,7 @@ class WorkerPool:
     def courts_text(self, account_id: str | None, venue_id: str | None, category: str | None) -> str:
         venue, worker, category = self._target(account_id, venue_id, category)
         data = worker.courts(venue, category)
-        return format_courts(venue.name, category, data["courts"])
+        return format_courts(venue.display_name, category, data["courts"])
 
     def slots_text(
         self,
@@ -147,17 +147,17 @@ class WorkerPool:
     ) -> str:
         venue, worker, category = self._target(account_id, venue_id, category)
         board = worker.board(venue, category, query_date)
-        return format_slots(venue.name, board, time_from, time_to)
+        return format_slots(venue.display_name, board, time_from, time_to)
 
     def snipe_text(self, account_id: str | None, venue_id: str | None) -> str:
         venue, worker, _category = self._target(account_id, venue_id, None)
-        return format_snipe(venue.name, worker.snipes[venue.id].state())
+        return format_snipe(venue.display_name, worker.snipes[venue.id].state())
 
     def arm_text(self, account_id: str | None, venue_id: str | None, category: str | None, targets: list[dict]) -> str:
         venue, worker, category = self._target(account_id, venue_id, category)
         resolved = self._resolve_targets(worker, venue, category, targets)
         state = worker.set_snipe(venue, category, resolved)
-        return format_snipe(venue.name, state)
+        return format_snipe(venue.display_name, state)
 
     def watch_text(self, account_id: str | None, venue_id: str | None) -> str:
         venue, worker, _category = self._target(account_id, venue_id, None)
@@ -179,12 +179,12 @@ class WorkerPool:
             "courtName": court_name,
         }
         state = worker.set_watch(venue, saved)
-        return format_watch(venue.name, state)
+        return format_watch(venue.display_name, state)
 
     def stop_watch_text(self, account_id: str | None, venue_id: str | None) -> str:
         venue, worker, _category = self._target(account_id, venue_id, None)
         if not worker.watch or not worker.watch.running:
-            return format_watch(venue.name, worker.watch_state())
+            return format_watch(venue.display_name, worker.watch_state())
         name = self._watch_venue_name(worker, venue)
         worker.set_watch(None, None)
         return f"已停止盯場 {name}"
@@ -192,16 +192,16 @@ class WorkerPool:
     def _watch_venue_name(self, worker: AccountWorker, fallback: Venue) -> str:
         spec = worker.watch.spec if worker.watch else {}
         venue = self.venues.get(spec.get("venue") or "")
-        return venue.name if venue else fallback.name
+        return venue.display_name if venue else fallback.display_name
 
     def cancel_text(self, account_id: str | None, venue_id: str | None) -> str:
         venue, worker, _category = self._target(account_id, venue_id, None)
         job = worker.snipes[venue.id]
         if not job.spec:
-            return format_snipe(venue.name, job.state())
+            return format_snipe(venue.display_name, job.state())
         names = "、".join(f"{item.get('name') or '任一場'} {item.get('time')}" for item in job.spec.get("targets") or [])
         worker.set_snipe(venue, None, None)
-        return f"已取消搶訂 {venue.name}" + (f"：{names}" if names else "")
+        return f"已取消搶訂 {venue.display_name}" + (f"：{names}" if names else "")
 
     def history_text(self, account_id: str | None = None) -> str:
         if account_id and account_id not in self.workers:
@@ -254,7 +254,7 @@ class WorkerPool:
             raise ValueError(reason)
         price = f"  ${raw['price']}" if raw.get("price") else ""
         text = (
-            f"即將用「{worker.account.display}」訂 {venue.name}\n"
+            f"即將用「{worker.account.display}」訂 {venue.display_name}\n"
             f"{court['name']}  {query_date}  {raw['time']}{price}\n"
             "會送出訂單（訂單成立），付款要自己完成。\n"
             "確認請傳 /ok ，放棄請傳 /no"
@@ -305,7 +305,7 @@ class WorkerPool:
     def _target(self, account_id: str | None, venue_id: str | None, category: str | None):
         venue = self._venue(venue_id)
         if category and category not in venue.categories:
-            raise ValueError(f"{venue.name} 沒有「{category}」。可選：" + "、".join(venue.categories))
+            raise ValueError(f"{venue.display_name} 沒有「{category}」。可選：" + "、".join(venue.categories))
         return venue, self._worker(account_id, venue), category or venue.categories[0]
 
     def _worker(self, account_id: str | None, venue: Venue) -> AccountWorker:
@@ -314,13 +314,13 @@ class WorkerPool:
             if worker is None:
                 raise ValueError("找不到帳號 " + account_id)
             if venue.id not in worker.snipes:
-                raise ValueError(f"帳號 {account_id} 不能訂 {venue.name}")
+                raise ValueError(f"帳號 {account_id} 不能訂 {venue.display_name}")
             return worker
         matching = [worker for worker in self.workers.values() if venue.id in worker.snipes]
         if len(matching) == 1:
             return matching[0]
         if not matching:
-            raise ValueError(f"沒有帳號可以訂 {venue.name}")
+            raise ValueError(f"沒有帳號可以訂 {venue.display_name}")
         raise ValueError("請在指令加上帳號：" + " | ".join(worker.account.id for worker in matching))
 
     def _resolve_targets(self, worker: AccountWorker, venue: Venue, category: str, targets: list[dict]) -> list[dict]:

@@ -122,7 +122,7 @@ def _filtered(courts, name: str | None):
 
 def _venues() -> int:
     for venue in load_venues().values():
-        print(f"{venue.id}\t{venue.name}\t平台 {venue.provider}\t{'、'.join(venue.categories)}")
+        print(f"{venue.id}\t{venue.display_name}\t平台 {venue.provider}\t{'、'.join(venue.categories)}")
         print(f"\t{venue.rules.describe()}")
     print()
     for account in load_accounts().values():
@@ -135,9 +135,9 @@ def _courts(args) -> int:
     venue, account, category = _target(args)
     with open_page(account, headless=not args.show) as page:
         courts = _filtered(create_provider(venue.provider, page).list_courts(venue, category), args.name)
-    print(f"{venue.name} {category}  {len(courts)} 筆")
+    print(f"{venue.display_name} {category}  {len(courts)} 筆")
     for court in courts:
-        print(f"{court.name}\t{court.venue}\t最低 {court.min_hours} 小時\t${court.price}/時\t{court.id}")
+        print(f"{court.name}\t最低 {court.min_hours} 小時\t${court.price}/時\t{court.id}")
     return 0
 
 
@@ -149,13 +149,13 @@ def _slots(args) -> int:
         if not courts:
             print("沒有符合的球場")
             return 0
-        print(f"{venue.name} {category}  可查 {len(courts)} 面球場")
+        print(f"{venue.display_name} {category}  可查 {len(courts)} 面球場")
         for court in courts:
             first = provider.availability(court, args.date or "")
             dates = [args.date] if args.date else [first.query_date]
             if args.scan:
                 dates = list(iter_dates(first.window_start, first.window_end))
-            print(f"\n{court.name}  {court.venue}  可預約 {first.window_start} ~ {first.window_end}")
+            print(f"\n{court.name}  可預約 {first.window_start} ~ {first.window_end}")
             cached = {first.query_date: first}
             for query_date in dates:
                 availability = cached.get(query_date) or provider.availability(court, query_date)
@@ -246,7 +246,7 @@ def _book(args) -> int:
         if reason:
             raise RuntimeError(reason)
         result = grab(provider, venue, court, args.date, slot)
-        print(f"已送出 {venue.name} {court.name}  {args.date}  {slot.time}  ${slot.price}")
+        print(f"已送出 {venue.display_name} {court.name}  {args.date}  {slot.time}  ${slot.price}")
         order = result.get("order")
         if order:
             print(f"訂單已成立 {order.get('no') or ''}")

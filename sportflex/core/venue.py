@@ -16,7 +16,8 @@ class Venue(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     id: str
-    name: str
+    name: str  # official centre name; kept in the config file, not shown
+    label: str = ""  # short name for the screen, Telegram, and commands
     provider: str  # key in sportflex.providers.registry
     params: dict = Field(default_factory=dict)  # handed to the provider, e.g. Changjia LID
     rules: BookingRules = Field(default_factory=BookingRules)
@@ -24,10 +25,15 @@ class Venue(BaseModel):
     prices: dict = Field(default_factory=dict)  # informational only
     info: dict = Field(default_factory=dict)  # address, phone, notes …
 
+    @property
+    def display_name(self) -> str:
+        """What people see. The official name stays in the venue file."""
+        return self.label.strip() or self.name
+
     def public(self) -> dict:
         return {
             "id": self.id,
-            "name": self.name,
+            "name": self.display_name,
             "provider": self.provider,
             "categories": self.categories,
             "prices": self.prices,
@@ -60,5 +66,5 @@ def get_venue(venue_id: str | None = None) -> Venue:
         return next(iter(venues.values()))
     if venue_id in venues:
         return venues[venue_id]
-    names = "、".join(f"{v.id}（{v.name}）" for v in venues.values())
+    names = "、".join(f"{v.id}（{v.display_name}）" for v in venues.values())
     raise ValueError(f"找不到場館「{venue_id}」。可選：{names}")

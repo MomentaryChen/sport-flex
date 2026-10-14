@@ -78,7 +78,9 @@ def test_slots_and_release(pool):
     assert "19:00 - 20:00  羽球場_B $490" in text
     assert "20:00 - 21:00" not in text
     assert "下一波" in pool.release_text(None)
-    assert "新北市新店" in pool.release_text("xindian")
+    release = pool.release_text("xindian")
+    assert "一號館" in release
+    assert "新北市新店" not in release
 
 
 def test_status_names_this_server(pool, monkeypatch):
