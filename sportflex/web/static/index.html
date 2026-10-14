@@ -535,7 +535,7 @@
       }
       const venues = $("venueSelect");
       venues.replaceChildren(...state.meta.venues.map((venue) =>
-        el("option", { value: venue.id, text: venue.name.replace(/^(新北市|臺北市|台北市)/, "") })));
+        el("option", { value: venue.id, text: venue.name })));
       const saved = localGet("venue");
       if (saved && state.meta.venues.some((venue) => venue.id === saved)) venues.value = saved;
       await selectVenue(venues.value);
