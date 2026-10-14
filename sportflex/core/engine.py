@@ -212,6 +212,8 @@ class SnipeJob:
         self._alerted: set[str] = set()
         self._run: dict | None = None  # timings of the current wave, written to snipe_runs when it ends
         self._clock = (datetime.now(), 0.0)  # (the tick's `now`, monotonic at that tick) for _sec()
+        self._offset_sec: float | None = None  # cached first-query offset for this wave
+        self._offset_noted = False
 
     @property
     def rules(self):
@@ -239,6 +241,8 @@ class SnipeJob:
         self._prepared = False
         self._next_at = 0
         self._run = None
+        self._offset_sec = None
+        self._offset_noted = False
         self._reset_alerts()
         self.store.save(self.spec)
         names = "、".join(f"{item['name']} {item['time']}" for item in targets)
@@ -255,6 +259,8 @@ class SnipeJob:
         self.spec = None
         self._prepared = False
         self._run = None
+        self._offset_sec = None
+        self._offset_noted = False
         self.store.clear()
         self.log.note("已取消搶訂", "cancelled")
         return self.state()
@@ -270,6 +276,8 @@ class SnipeJob:
         saved["phase"] = "armed"
         saved["opensAt"] = release["opensAt"]
         self.spec = saved
+        self._offset_sec = None
+        self._offset_noted = False
         self._reset_alerts()
         self.log.note("恢復尚未完成的搶訂設定", "restored", targetDate=saved["targetDate"])
 
@@ -298,7 +306,11 @@ class SnipeJob:
         if now < opens_at - timedelta(seconds=self.rules.prepare_lead_sec):
             self._check_login(provider, spec, now, opens_at)
             return
-        if now < opens_at:
+        # The site usually opens a little after opens_at. An early query counts as
+        # "not released" and the next look waits a full poll, so the first query
+        # waits out the offset learned from past snipe_runs.
+        fire_at = opens_at + timedelta(seconds=self.release_offset_sec())
+        if now < fire_at:
             if spec["phase"] == "need_login" and time.time() < self._next_at:
                 return
             self._prepare(provider, spec)
@@ -371,6 +383,7 @@ class SnipeJob:
         spec["phase"] = "ready"
         self.store.save(spec)
         self.log.note(f"已停在 {first.name} 的預約頁，等 {self.rules.release_time}", "ready", court=first.name)
+        self._note_offset()
 
     def _existing_holds(self, provider: Provider, spec: dict, courts: list[Court]) -> list[dict]:
         """Bookings already on the release day. Counted before we park, so the first submit stays fast."""
@@ -589,6 +602,40 @@ class SnipeJob:
                     f"沒搶到 {self.venue.display_name} {spec['targetDate']}",
                     f"{missed_names}\n{tail}",
                 )
+
+    def release_offset_sec(self) -> float:
+        """Seconds after opens_at for the first query. Cached so a wave doesn't move its own goal."""
+        if self._offset_sec is None:
+            try:
+                self._offset_sec = float(
+                    self.events.release_offset_sec(venue=self.venue.id, account=self.account_id) or 0.0
+                )
+            except Exception:
+                self._offset_sec = 0.0
+        return self._offset_sec
+
+    def next_action_in(self, now: datetime) -> float | None:
+        """Seconds until the next thing this job must do, so the worker can wake on time."""
+        spec = self.spec
+        if not spec or spec["phase"] not in ACTIVE_PHASES:
+            return None
+        if spec["phase"] == "firing":
+            return self._next_at - time.time()
+        fire_at = datetime.fromisoformat(spec["opensAt"]) + timedelta(seconds=self.release_offset_sec())
+        fire_in = (fire_at - now).total_seconds()
+        if spec["phase"] == "need_login":
+            return min(fire_in, self._next_at - time.time())
+        return fire_in
+
+    def _note_offset(self) -> None:
+        if self._offset_noted:
+            return
+        self._offset_noted = True
+        offset = self.release_offset_sec()
+        if not offset:
+            return
+        when = f"開搶後 {offset:.2f} 秒" if offset > 0 else f"開搶前 {abs(offset):.2f} 秒"
+        self.log.note(f"第一次查詢會在{when}送出，對齊最近的釋出時間", "offset", offsetSec=offset)
 
     def _sec(self) -> float:
         """Seconds since release on the tick's clock (tests pass a fake `now`)."""

@@ -7,6 +7,7 @@ from datetime import date, timedelta
 
 from sportflex.core.models import Slot, slot_matches
 from sportflex.core.rules import next_release
+from sportflex.core.snipe_stats import stats_lines
 from sportflex.core.venue import Venue
 
 PERIODS = {
@@ -345,10 +346,10 @@ def format_watch(venue_name: str, state: dict) -> str:
     return "\n".join(lines)
 
 
-def format_runs(runs: list[dict]) -> str:
+def format_runs(runs: list[dict], stats: dict | None = None) -> str:
     if not runs:
         return "最近沒有開搶紀錄"
-    lines = ["最近開搶"]
+    lines = ["最近開搶", *stats_lines(stats or {})]
     for run in runs[:8]:
         result = RUN_RESULTS.get(run.get("result") or "", run.get("result") or "")
         lines.append(

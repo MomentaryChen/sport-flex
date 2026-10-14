@@ -264,6 +264,17 @@ def snipe_runs(request: Request, account: str = "", venue: str = "", days: float
     return {"ok": True, "runs": store.snipe_runs(account=account, venue=venue, days=days, limit=limit)}
 
 
+@app.get("/api/snipe-stats")
+def snipe_stats(request: Request, account: str = "", venue: str = "", days: float = 30):
+    """Hit rate, average seconds until the site releases, and which court is easiest to book.
+
+    `offsetSec` is the median release time (once there are enough waves). The snipe uses it
+    as the delay before the first query.
+    """
+    store = pool(request).events
+    return {"ok": True, "stats": store.snipe_stats(account=account, venue=venue, days=days)}
+
+
 @app.get("/api/watch")
 def watch_state(request: Request, venue: str | None = None, account: str | None = None):
     _venue, worker = pool(request).resolve(venue, account)
