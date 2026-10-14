@@ -26,9 +26,10 @@ class FakeProvider(Provider):
         self.submitted: list[tuple[str, str, str]] = []
         self.prepared: list[str] = []
         self.throttle = False
+        self.clock_offset_sec = None  # local clock ahead of the site, when a test sets it
 
     def refresh_session(self):
-        return {"loggedIn": self.logged_in, "banner": ""}
+        return {"loggedIn": self.logged_in, "banner": "", "clockOffset": self.clock_offset_sec}
 
     def list_courts(self, venue, category):
         return [Court(id=c, name=f"場{c}", venue=venue.name, category=category) for c in "AB"]
@@ -305,17 +306,72 @@ def test_login_checked_after_arming_and_before_release(venue):
     provider.logged_in = False  # drops again near release: alert again
     job.tick(provider, opens(job) - timedelta(minutes=venue.rules.login_check_lead_min - 1))
     assert job.spec["phase"] == "need_login" and len(alerts) == 2
+    assert all("開搶前確認" not in title for title, _body in alerts)
 
 
-def test_logged_in_checks_are_silent_and_not_repeated(venue):
-    job, alerts = alerting(venue)
+def test_logged_in_checks_stay_quiet_until_the_preflight(venue):
+    job, alerts = alerting(venue, [{"courtId": "A", "name": "A", "time": "20:00"}])
     calls = []
     provider = FakeProvider()
-    provider.refresh_session = lambda: calls.append(1) or {"loggedIn": True, "banner": ""}
+    provider.clock_offset_sec = 0.26
+    provider.refresh_session = lambda: calls.append(1) or {
+        "loggedIn": True,
+        "banner": "",
+        "clockOffset": provider.clock_offset_sec,
+    }
     for hours in (8, 7, 6):
         job.tick(provider, opens(job) - timedelta(hours=hours))
+    assert len(calls) == 1 and not alerts and job.spec["phase"] == "armed"
+
+    job.tick(provider, opens(job) - timedelta(minutes=venue.rules.login_check_lead_min))
+    assert len(calls) == 2 and len(alerts) == 1
+    assert alerts[0] == (
+        "測試中心 開搶前確認",
+        "已登入、已排好 A 20:00、本機與網站時差 +0.3 秒",
+    )
     job.tick(provider, opens(job) - timedelta(minutes=5))
-    assert len(calls) == 2 and not alerts and job.spec["phase"] == "armed"
+    assert len(calls) == 2 and len(alerts) == 1 and job.spec["phase"] == "armed"
+    job.tick(provider, opens(job) - timedelta(seconds=30))
+    assert len(calls) == 3 and len(alerts) == 1 and job.spec["phase"] == "ready"
+
+
+def test_preflight_again_after_login_returns(venue):
+    job, alerts = alerting(venue, [{"courtId": "", "time": "20:00"}, {"courtId": "B", "name": "B", "time": "21:00"}])
+    provider = FakeProvider(logged_in=False)
+    provider.clock_offset_sec = -1.24
+    job.tick(provider, opens(job) - timedelta(minutes=9))
+    assert job.spec["phase"] == "need_login" and "登入已失效" in alerts[0][0]
+
+    provider.logged_in = True
+    job._next_at = 0
+    job.tick(provider, opens(job) - timedelta(minutes=8))
+    assert job.spec["phase"] == "armed"
+    assert alerts[-1] == (
+        "測試中心 開搶前確認",
+        "已登入、已排好 任一場 20:00、B 21:00、本機與網站時差 -1.2 秒",
+    )
+    job._next_at = 0
+    job.tick(provider, opens(job) - timedelta(minutes=7))
+    assert len(alerts) == 2
+
+
+def test_preflight_when_the_site_clock_is_missing(venue):
+    job, alerts = alerting(venue, [{"courtId": "A", "name": "A", "time": "20:00"}])
+    provider = FakeProvider()
+    provider.clock_offset_sec = float("nan")
+    job.tick(provider, opens(job) - timedelta(minutes=10))
+    assert alerts == [("測試中心 開搶前確認", "已登入、已排好 A 20:00、本機與網站時差未知")]
+
+
+def test_prepare_confirms_when_the_lead_check_was_missed(venue):
+    job, alerts = alerting(venue, [{"courtId": "A", "name": "A", "time": "20:00"}])
+    provider = FakeProvider()
+    provider.clock_offset_sec = 0.26
+    job.tick(provider, opens(job) - timedelta(seconds=30))
+    assert job.spec["phase"] == "ready"
+    assert alerts == [("測試中心 開搶前確認", "已登入、已排好 場A 20:00、本機與網站時差 +0.3 秒")]
+    job.tick(provider, opens(job) - timedelta(seconds=20))
+    assert len(alerts) == 1
 
 
 def test_throttle_alerts_once(venue):
