@@ -1,5 +1,9 @@
 # Sport Flex
 
+[中文](README.md) · [English](README.en.md)
+
+> **免責附註。** 此工具不負任何責任。軟體依現況提供，沒有任何保證。使用風險由你自行承擔。詳見 [免責聲明](#免責聲明)。
+
 好時段往往在開放的那一秒就沒了。Sport Flex 把查表、等到開放、看到空檔就送出，收成同一個畫面。訂單由它送出，付款仍由你自己完成。
 
 ## 查空檔，順便把下一波排好
@@ -25,7 +29,7 @@
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
-.venv/bin/playwright install chromium
+.venv/bin/playwright install chrome
 .venv/bin/python -m sportflex ui
 ```
 
@@ -56,5 +60,16 @@ categories: [羽球]
 
 - 盯已經開放、目前額滿的時段，一有空檔就送出訂單。
 - 同一個平台可以掛多個帳號，各自的瀏覽器同時搶。
-- 有設定 Telegram 時，驗證碼和搶到的結果會傳過去。
+- 有設定 Telegram 時，驗證碼和搶到的結果會傳過去。在 `.env` 加上 `SPORT_FLEX_TELEGRAM_BOT_TOKEN` 與 `SPORT_FLEX_TELEGRAM_CHAT_ID`。
 - `python -m sportflex --help` 可以用指令查場、看時段、送出預約。
+- Docker：`docker compose -f infra/docker-compose.yml up -d --build`，然後開 `http://127.0.0.1:8765/`。
+
+## 免責聲明
+
+**此工具不負任何責任，也不承擔任何賠償或義務。**
+
+Sport Flex 依「現況」與「現有」提供，沒有任何明示或默示保證，包括特定用途適用性、資料正確，或運作不中斷。
+
+作者、貢獻者與此工具，對安裝、執行或無法執行所造成的一切不負責，包括沒訂到、重複訂、不想要的預約、場館費用與取消費、帳號受限、付款與個人資料，以及任何損失或爭議。
+
+付款前請自行核對訂單。**此工具不會代為付款。** 它與任何運動中心或訂場平台沒有關係。使用、複製或修改此工具，即表示你接受本免責聲明。
