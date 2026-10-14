@@ -9,6 +9,7 @@ from sportflex.core.engine import grab
 from sportflex.core.events import EventStore
 from sportflex.core.snipe_stats import stats_lines
 from sportflex.core.models import iter_dates, slot_bounds, slot_matches
+from sportflex.core.refund import reminder_line
 from sportflex.core.rules import quota_reason
 from sportflex.core.venue import get_venue, load_venues
 from sportflex.paths import OUTPUT_DIR
@@ -263,6 +264,9 @@ def _book(args) -> int:
                 print(f"發票請選「手機載具」，填 {order['carrier']}")
             for line in calendar_lines(result):
                 print(line)
+            planned = reminder_line(result)
+            if planned:
+                print(planned)
             calendar = result.get("calendar")
             if calendar:
                 print(f"行事曆檔：{save_ics(calendar, OUTPUT_DIR)}")

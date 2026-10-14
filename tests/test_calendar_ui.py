@@ -11,7 +11,11 @@ from urllib.parse import urlparse
 
 import pytest
 
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 from sportflex.core.calendar import booking_calendar
+from sportflex.core.refund import plan_refund_reminder
 from sportflex.core.rules import next_release
 from sportflex.core.venue import get_venue
 from sportflex.web.app import INDEX
@@ -51,6 +55,9 @@ def _payload():
         },
     }
     result["calendar"] = booking_calendar(venue, result)
+    result["refundReminder"] = plan_refund_reminder(
+        venue, result, datetime(2026, 10, 14, 12, tzinfo=ZoneInfo("Asia/Taipei"))
+    )
     return venue, result
 
 
@@ -80,7 +87,10 @@ def test_order_sheet_offers_calendar_file_and_google_link(tmp_path):
 
             sheet = page.locator("#modal .sheet")
             sheet.get_by_text("取消規則：", exact=False).wait_for()
-            assert "前 2 天內不退費" in sheet.locator("#resultRefund").inner_text()
+            refund_text = sheet.locator("#resultRefund").inner_text()
+            assert "前 2 天內不退費" in refund_text
+            assert "10/18（週日） 09:00" in refund_text
+            assert "要不要取消" in refund_text
             assert "CJC1" in sheet.locator("#resultText").inner_text()
             google = sheet.get_by_role("link", name="加入 Google 行事曆")
             assert google.get_attribute("href") == calendar["googleUrl"]
@@ -95,6 +105,7 @@ def test_order_sheet_offers_calendar_file_and_google_link(tmp_path):
             artifacts = Path("/opt/cursor/artifacts")
             if artifacts.is_dir():
                 sheet.screenshot(path=str(artifacts / "order-calendar.png"))
+                sheet.locator("#resultRefund").screenshot(path=str(artifacts / "refund-reminder.png"))
 
             with page.expect_download() as download_info:
                 sheet.get_by_role("button", name="下載 .ics").click()

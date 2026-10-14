@@ -8,6 +8,7 @@ from sportflex.paths import OUTPUT_DIR
 SNIPES_DIR = OUTPUT_DIR / "snipes"
 WATCHES_DIR = OUTPUT_DIR / "watches"
 ROUTINES_DIR = OUTPUT_DIR / "routines"
+BOOKINGS_DIR = OUTPUT_DIR / "bookings"
 
 
 class SnipeStore:
@@ -75,3 +76,26 @@ class WatchStore:
 
     def clear(self) -> None:
         self.path.unlink(missing_ok=True)
+
+
+class BookingStore:
+    """Paid bookings waiting for a refund-deadline reminder. One JSON file per account."""
+
+    def __init__(self, account_id: str, directory: Path | None = None) -> None:
+        self.path = (directory or BOOKINGS_DIR) / f"{account_id}.json"
+
+    def load(self) -> list[dict]:
+        if not self.path.exists():
+            return []
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return []
+        return data if isinstance(data, list) else []
+
+    def save(self, items: list[dict]) -> None:
+        if not items:
+            self.path.unlink(missing_ok=True)
+            return
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
