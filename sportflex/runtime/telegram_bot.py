@@ -16,6 +16,7 @@ from sportflex.runtime.telegram_cmd import (
     parse_slots_args,
     parse_snipe_tokens,
     parse_watch_args,
+    parse_weekly_args,
     pop_known,
     pop_venue,
 )
@@ -31,6 +32,8 @@ HELP = (
     "/slots [日期] [時段]  可預約時段\n"
     "/snipe 19:00 [20:00]  搶下一波（任一場）\n"
     "/snipe A 19:00  指定場地\n"
+    "/weekly 二四 20:00  每週固定，開放前自動排第 14 天\n"
+    "/weekly off  停用每週固定\n"
     "/cancel  取消搶訂\n"
     "/watch 明天 晚上  盯已開放的時段，有空就訂\n"
     "/watch off  停止盯場\n"
@@ -212,6 +215,20 @@ class TelegramBot:
             self._drop_confirm()
             targets = parse_snipe_tokens(tokens)
             self._background(lambda: ctrl.arm_text(account_id, venue_id, category, targets))
+        elif name == "/weekly":
+            if not tokens:
+                self.send_text(ctrl.routine_text(account_id, venue_id))
+                return
+            self._drop_confirm()
+            spec = parse_weekly_args(tokens)
+            if spec["stop"]:
+                self._background(lambda: ctrl.clear_routine_text(account_id, venue_id))
+            else:
+                weekdays = spec["weekdays"]
+                targets = spec["targets"]
+                self._background(
+                    lambda: ctrl.set_routine_text(account_id, venue_id, category, {"weekdays": weekdays, "targets": targets})
+                )
         elif name == "/watch":
             if not tokens:
                 self.send_text(ctrl.watch_text(account_id, venue_id))

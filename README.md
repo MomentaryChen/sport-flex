@@ -58,6 +58,7 @@ categories: [羽球]
 
 ## 其他
 
+- 每週固定時段：例如每週二、四 20:00 任一場。套用一次之後，每天 06:00 釋出前會自動排上第 14 天，不必再每天手動設。Telegram：`/weekly 二四 20:00`。
 - 盯已經開放、目前額滿的時段，一有空檔就送出訂單。
 - 同一個平台可以掛多個帳號，各自的瀏覽器同時搶。
 - 有設定 Telegram 時，驗證碼和搶到的結果會傳過去。在 `.env` 加上 `SPORT_FLEX_TELEGRAM_BOT_TOKEN` 與 `SPORT_FLEX_TELEGRAM_CHAT_ID`。

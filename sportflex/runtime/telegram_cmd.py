@@ -6,6 +6,7 @@ import re
 from datetime import date, timedelta
 
 from sportflex.core.models import Slot, slot_matches
+from sportflex.core.routine import weekday_token
 from sportflex.core.rules import next_release
 from sportflex.core.venue import Venue
 
@@ -180,6 +181,25 @@ def parse_snipe_tokens(tokens: list[str]) -> list[dict]:
     return targets
 
 
+def parse_weekly_args(tokens: list[str]) -> dict:
+    """`/weekly 二四 20:00` or `/weekly 週二 週四 A 19:00`. `/weekly off` clears it."""
+    if len(tokens) == 1 and tokens[0].casefold() in {"off", "stop", "停", "停止", "停用"}:
+        return {"stop": True}
+    weekdays: list[int] = []
+    rest: list[str] = []
+    for token in tokens:
+        days = weekday_token(token)
+        if days is not None:
+            for day in days:
+                if day not in weekdays:
+                    weekdays.append(day)
+            continue
+        rest.append(token)
+    if not weekdays:
+        raise ValueError("請給星期，例如 /weekly 二四 20:00")
+    return {"stop": False, "weekdays": weekdays, "targets": parse_snipe_tokens(rest)}
+
+
 def parse_watch_args(tokens: list[str], today: date) -> dict:
     """`/watch off` stops. Otherwise a date, an optional period, and an optional court name."""
     if len(tokens) == 1 and tokens[0].casefold() in {"off", "stop", "停", "停止"}:
@@ -322,6 +342,30 @@ def format_snipe(venue_name: str, state: dict) -> str:
         lines.append(f"・{item.get('name') or '任一場'} {item.get('time')}{extra}")
     if state.get("running"):
         lines.append("看到空檔會送出訂單，付款要自己完成。取消：/cancel")
+    if state.get("source") == "routine" and state.get("running"):
+        lines.append("這一波是每週固定自動排上的。")
+    return "\n".join(lines)
+
+
+def format_routine(venue_name: str, state: dict) -> str:
+    if not state.get("enabled"):
+        return (
+            f"{venue_name} 還沒有每週固定時段\n"
+            "設定：/weekly 二四 20:00\n"
+            "指定場地：/weekly 二四 A 19:00\n"
+            "停用：/weekly off"
+        )
+    lines = [f"{venue_name} {state.get('label') or '每週固定'}"]
+    release = state.get("release") or {}
+    if state.get("skipDate") and state.get("skipDate") == release.get("targetDate"):
+        lines.append(f"這一波 {release.get('targetLabel', '')} 已取消，之後符合的日子仍會自動排。")
+    elif state.get("due"):
+        lines.append(
+            f"下一波 {release.get('targetLabel', '')} 會在 {release.get('opensLabel', '')} 前自動排好。"
+        )
+    else:
+        lines.append(f"下一波 {release.get('targetLabel', '')} 不是選定的星期，到了會再排。")
+    lines.append("停用：/weekly off")
     return "\n".join(lines)
 
 

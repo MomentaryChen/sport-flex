@@ -90,6 +90,19 @@ def test_status_names_this_server(pool, monkeypatch):
     assert pool.meta()["instance"] == "docker"
 
 
+def test_status_includes_weekly_pattern(pool):
+    pool.worker._routines["xindian"] = {
+        "category": "羽球",
+        "weekdays": [1, 3],
+        "targets": [{"courtId": "", "name": "任一場", "time": "20:00"}],
+        "skipDate": "",
+    }
+    assert "每週二、四 20:00 任一場" in pool.status_text()
+    text = pool.routine_text(None, None)
+    assert "每週二、四 20:00 任一場" in text
+    assert "/weekly off" in text
+
+
 def test_arm_cancel_and_status(pool):
     text = pool.arm_text(None, None, None, [{"court": "", "time": "19:00"}, {"court": "A", "time": "20:00"}])
     assert "任一場 19:00" in text and "羽球場_A 20:00" in text

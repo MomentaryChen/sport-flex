@@ -221,16 +221,17 @@ class SnipeJob:
     def active(self) -> bool:
         return bool(self.spec) and self.spec["phase"] in ACTIVE_PHASES
 
-    def arm(self, category: str, raw_targets: list) -> dict:
+    def arm(self, category: str, raw_targets: list, source: str = "manual", now: datetime | None = None) -> dict:
         if category not in self.venue.categories:
             raise ValueError(f"{self.venue.display_name} 沒有 {category}")
         targets = validate_targets(self.rules, raw_targets)
-        release = next_release(self.rules)
+        release = next_release(self.rules, now)
         self.spec = {
             "category": category,
             "targetDate": release["targetDate"],
             "opensAt": release["opensAt"],
             "phase": "armed",
+            "source": source,
             "targets": targets,
             "deadline": (
                 datetime.fromisoformat(release["opensAt"]) + timedelta(minutes=self.rules.snipe_deadline_min)
@@ -242,21 +243,26 @@ class SnipeJob:
         self._reset_alerts()
         self.store.save(self.spec)
         names = "、".join(f"{item['name']} {item['time']}" for item in targets)
+        if source == "routine":
+            text = f"每週時段已排上 {release['targetLabel']} {names}，{release['opensLabel']} 開搶"
+        else:
+            text = f"已設定 {release['targetLabel']} {names}，{release['opensLabel']} 開搶"
         self.log.note(
-            f"已設定 {release['targetLabel']} {names}，{release['opensLabel']} 開搶",
+            text,
             "armed",
             targetDate=release["targetDate"],
             opensAt=release["opensAt"],
             targets=targets,
+            source=source,
         )
         return self.state()
 
-    def cancel(self) -> dict:
+    def cancel(self, reason: str = "已取消搶訂") -> dict:
         self.spec = None
         self._prepared = False
         self._run = None
         self.store.clear()
-        self.log.note("已取消搶訂", "cancelled")
+        self.log.note(reason, "cancelled")
         return self.state()
 
     def restore(self) -> None:
@@ -281,6 +287,7 @@ class SnipeJob:
             "running": phase in ACTIVE_PHASES,
             "phase": phase,
             "category": self.spec["category"] if self.spec else "",
+            "source": (self.spec or {}).get("source") or "",
             "release": next_release(self.rules),
             "targets": [
                 {key: item.get(key) for key in ("courtId", "name", "time", "status", "bookedName")}

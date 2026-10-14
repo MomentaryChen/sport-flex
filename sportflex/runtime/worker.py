@@ -7,7 +7,7 @@ import threading
 import time
 
 from sportflex.core.accounts import Account
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 from sportflex.core.engine import (
     SnipeJob,
@@ -21,8 +21,9 @@ from sportflex.core.engine import (
 from sportflex.core.events import EventStore, NullEventStore
 from sportflex.core.models import Slot, slot_bounds
 from sportflex.core.notify import Notifier
-from sportflex.core.rules import quota_reason
-from sportflex.core.storage import WatchStore
+from sportflex.core.routine import apply_saved_routine, build_routine, describe_routine, skip_wave
+from sportflex.core.rules import next_release, quota_reason
+from sportflex.core.storage import RoutineStore, WatchStore
 from sportflex.core.venue import Venue
 from sportflex.providers import create_provider
 from sportflex.providers.base import Provider, ProviderError
@@ -91,6 +92,8 @@ class AccountWorker:
             vid: SnipeJob(venue, account.id, self._record_grab, self._alert, self.events, on_logout=self._logged_out)
             for vid, venue in self.venues.items()
         }
+        self._routines: dict[str, dict] = {}
+        self._load_routines()
         self.watch: WatchJob | None = None
         self.last_grab: dict | None = None
         self.session = {"loggedIn": False, "banner": ""}
@@ -162,6 +165,8 @@ class AccountWorker:
                     self._logged_out("服務啟動時發現尚未登入")
                 for job in self.snipes.values():
                     job.restore()
+                self._load_routines()
+                self._apply_routines()
                 self._restore_watch()
                 self.ready.set()
                 while not self._stop.is_set():
@@ -188,6 +193,7 @@ class AccountWorker:
         return False
 
     def _tick(self, provider: Provider) -> None:
+        self._apply_routines()
         active = [job for job in self.snipes.values() if job.active]
         if time.time() < self._hold_until and not (active and self._snipe_near_release()):
             return  # navigating now would throw away the captcha the user is typing
@@ -715,8 +721,91 @@ class AccountWorker:
     def set_snipe(self, venue: Venue, category: str | None, targets: list | None) -> dict:
         job = self.snipes[venue.id]
         if targets is None:
-            return self.call(lambda _provider: job.cancel())
+            def run(_provider: Provider) -> dict:
+                self._remember_routine_skip(venue, job)
+                return job.cancel()
+
+            return self.call(run)
         return self.call(lambda _provider: job.arm(category or venue.categories[0], targets))
+
+    def set_routine(self, venue: Venue, routine: dict | None) -> dict:
+        """Save a weekly pattern and arm the upcoming release when it matches.
+
+        `routine` is None to turn the pattern off. Saving again clears a skipped wave,
+        so the next matching release is armed immediately.
+        """
+
+        def run(_provider: Provider) -> dict:
+            store = RoutineStore(venue.id, self.account.id)
+            job = self.snipes[venue.id]
+            if routine is None:
+                self._routines.pop(venue.id, None)
+                store.clear()
+                if job.spec and job.spec.get("source") == "routine" and job.spec.get("phase") in {"armed", "need_login"}:
+                    job.cancel("已停用每週固定，這一波自動搶訂已取消")
+            else:
+                category = routine.get("category") or venue.categories[0]
+                if category not in venue.categories:
+                    raise ValueError(f"{venue.display_name} 沒有 {category}")
+                saved = build_routine(venue.rules, category, routine.get("weekdays") or [], routine.get("targets") or [])
+                self._routines[venue.id] = saved
+                store.save(saved)
+                apply_saved_routine(job, saved)
+            return self.routine_state(venue)
+
+        return self.call(run)
+
+    def routine_state(self, venue: Venue) -> dict:
+        routine = self._routines.get(venue.id)
+        release = next_release(venue.rules)
+        state = {
+            "venue": venue.id,
+            "account": self.account.id,
+            "enabled": False,
+            "category": "",
+            "weekdays": [],
+            "targets": [],
+            "skipDate": "",
+            "label": "",
+            "due": False,
+            "release": release,
+        }
+        if not routine:
+            return state
+        target = release["targetDate"]
+        try:
+            weekday = date.fromisoformat(target).weekday()
+        except ValueError:
+            weekday = -1
+        state.update(
+            enabled=True,
+            category=routine.get("category") or "",
+            weekdays=list(routine.get("weekdays") or []),
+            targets=list(routine.get("targets") or []),
+            skipDate=routine.get("skipDate") or "",
+            label=describe_routine(routine),
+            due=weekday in set(routine.get("weekdays") or []) and (routine.get("skipDate") or "") != target,
+        )
+        return state
+
+    def _load_routines(self) -> None:
+        loaded: dict[str, dict] = {}
+        for venue_id in self.venues:
+            saved = RoutineStore(venue_id, self.account.id).load()
+            if saved:
+                loaded[venue_id] = saved
+        self._routines = loaded
+
+    def _apply_routines(self, now: datetime | None = None) -> None:
+        for venue_id, job in self.snipes.items():
+            apply_saved_routine(job, self._routines.get(venue_id), now)
+
+    def _remember_routine_skip(self, venue: Venue, job: SnipeJob) -> None:
+        updated = skip_wave(self._routines.get(venue.id), job.spec)
+        if not updated:
+            return
+        self._routines[venue.id] = updated
+        RoutineStore(venue.id, self.account.id).save(updated)
 
     def set_watch(self, venue: Venue | None, spec: dict | None) -> dict:
         def run(_provider: Provider) -> dict:
