@@ -5,6 +5,7 @@ import copy
 import queue
 import threading
 import time
+from typing import Callable
 
 from sportflex.core.accounts import Account
 from datetime import date, datetime, timedelta
@@ -33,6 +34,7 @@ from sportflex.core.identity import login_prefix
 from sportflex.runtime.captcha_ocr import read_captcha
 from sportflex.runtime.telegram_bot import TelegramBot
 
+ORDERS_BLOCKED = "另一個 Sport Flex 正在使用同一個 Telegram bot，這台已暫停下單，避免重複訂到。"
 SESSION_CHECK_SEC = 15 * 60  # keep-alive visit while no snipe is armed
 LOGIN_HOLD_SEC = 5 * 60  # how long the page waits on the login form for a captcha reply
 REPROMPT_SEC = 10 * 60  # still logged out and no reply: send a fresh captcha this often
@@ -84,12 +86,14 @@ class AccountWorker:
         events: EventStore | None = None,
         bot: TelegramBot | None = None,
         coord: Coordinator | None = None,
+        booking_blocked: Callable[[], bool] | None = None,
     ) -> None:
         self.account = account
         self.notifier = notifier
         self.events = events or NullEventStore()
         self.bot = bot
         self.coord = coord
+        self.booking_blocked = booking_blocked  # another process is polling the same bot
         self.venues = {vid: venue for vid, venue in venues.items() if venue.provider == account.provider}
         self.snipes = {
             vid: SnipeJob(
@@ -224,7 +228,14 @@ class AccountWorker:
                 return True
         return False
 
+    def _orders_blocked(self) -> bool:
+        return bool(self.booking_blocked and self.booking_blocked())
+
     def _tick(self, provider: Provider) -> None:
+        # Another process is polling the same bot, so its browsers are sniping too.
+        # Stay quiet until that conflict clears instead of placing a second order.
+        if self._orders_blocked():
+            return
         self._apply_routines()
         active = [job for job in self.snipes.values() if job.active]
         if time.time() < self._hold_until and not (active and self._snipe_near_release()):
@@ -739,6 +750,9 @@ class AccountWorker:
         return self.call(run, timeout=60)
 
     def grab(self, venue: Venue, category: str, court_id: str, query_date: str, slot: Slot) -> dict:
+        if self._orders_blocked():
+            raise RuntimeError(ORDERS_BLOCKED)
+
         def run(provider: Provider) -> dict:
             self._ensure_page_free()
             _start, _end, hours = slot_bounds(slot.time)
