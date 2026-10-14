@@ -919,8 +919,62 @@ def _watch_label(spec: dict) -> str:
     return window
 
 
+def _hours_label(hours: float) -> str:
+    return str(int(hours)) if float(hours).is_integer() else str(hours)
+
+
+def _hold_key(court_id: str, time_label: str) -> tuple[str, str]:
+    return court_id, str(time_label or "").split("-", 1)[0].strip()
+
+
+def _combined_holds(courts: list[dict], spec: dict) -> list[dict]:
+    """Board bookings plus slots this watch already submitted.
+
+    The timetable can lag behind a grab. Counting both keeps a fill-the-day
+    watch from booking the same slot twice or slipping past the daily cap.
+    """
+    held = holds_from_board(courts)
+    seen = {_hold_key(item.get("courtId") or "", item.get("time") or "") for item in held}
+    for item in spec.get("booked") or []:
+        key = _hold_key(item.get("courtId") or "", item.get("time") or "")
+        if not key[1] or key in seen:
+            continue
+        hours = item.get("hours")
+        if hours is None:
+            try:
+                _start, _end, hours = slot_bounds(item.get("time") or "")
+            except (ValueError, IndexError):
+                continue
+        seen.add(key)
+        held.append({"courtId": key[0], "time": item.get("time") or "", "hours": float(hours)})
+    return held
+
+
+def _day_full(rules, held: list[dict]) -> bool:
+    used = sum(float(item.get("hours") or 0) for item in held)
+    return used + float(rules.slot_hours) > float(rules.max_hours_per_day) + 1e-9
+
+
+def _remember_booking(spec: dict, court_id: str, slot: Slot) -> None:
+    booked = spec.setdefault("booked", [])
+    key = _hold_key(court_id, slot.time)
+    if any(_hold_key(item.get("courtId") or "", item.get("time") or "") == key for item in booked):
+        return
+    _start, _end, hours = slot_bounds(slot.time)
+    booked.append({"courtId": court_id, "time": slot.time, "hours": hours})
+
+
+def _already_booked(spec: dict, court_id: str, slot: Slot) -> bool:
+    key = _hold_key(court_id, slot.time)
+    return any(_hold_key(item.get("courtId") or "", item.get("time") or "") == key for item in spec.get("booked") or [])
+
+
 class WatchJob:
-    """Poll an already-released day and grab the first open slot that matches."""
+    """Poll an already-released day and grab the first open slot that matches.
+
+    A time window stops after one booking. ``untilFull`` keeps grabbing matching
+    slots until that day's hour cap is reached.
+    """
 
     def __init__(
         self,
@@ -947,8 +1001,9 @@ class WatchJob:
         self._next_at = 0.0
         rules = venue.rules
         self.interval = max(rules.watch_min_interval_sec, int(spec.get("interval") or rules.watch_interval_sec))
+        extra = "，訂到當天上限才停" if self._filling() else ""
         self.log.note(
-            f"開始盯 {venue.display_name} {spec['category']} {spec.get('date')} {_watch_label(spec)}",
+            f"開始盯 {venue.display_name} {spec['category']} {spec.get('date')} {_watch_label(spec)}{extra}",
             "watch_started",
             spec=spec,
         )
@@ -977,6 +1032,9 @@ class WatchJob:
             self.log.note(f"盯場查詢失敗：{exc}", "error", "error")
             return
         self._alerted.discard("login")
+        if self._filling() and _day_full(self.venue.rules, _combined_holds(board["courts"], spec)):
+            self._note_full()
+            return
         court_id, slot, blocked = _first_open(board["courts"], spec, self.venue.rules)
         if blocked and not court_id:
             self.log.quiet(blocked)
@@ -1001,14 +1059,39 @@ class WatchJob:
         except Exception as exc:
             self.log.note(f"搶位失敗：{exc}", "error", "error")
             return
-        still = _drop_watch_target(self.spec, court_id, slot) and bool(self.spec.get("targets"))
+        filled = False
+        if self._filling():
+            _remember_booking(self.spec, court_id, slot)
+            filled = _day_full(self.venue.rules, _combined_holds(board["courts"], self.spec))
+            still = not filled
+        else:
+            still = _drop_watch_target(self.spec, court_id, slot) and bool(self.spec.get("targets"))
         if not still:
             self.running = False
         self.log.note(f"已送到 {result['url']}", "booked", court=result["court"], time=result["time"])
         self.on_grab(result)
         if still:
-            self.log.note(f"還有 {len(self.spec['targets'])} 個時段要盯", "watch_remain")
+            if self.spec.get("targets"):
+                self.log.note(f"還有 {len(self.spec['targets'])} 個時段要盯", "watch_remain")
+            else:
+                self.log.note("還沒到當天上限，繼續盯", "watch_remain")
             self.on_change(self.spec)
+        elif filled:
+            self._note_full()
+
+    def _filling(self) -> bool:
+        """Time-window watches can opt in to booking until the daily hour cap."""
+        return bool(self.spec.get("untilFull")) and not (self.spec.get("targets") or [])
+
+    def _note_full(self) -> None:
+        limit = _hours_label(self.venue.rules.max_hours_per_day)
+        self.running = False
+        self.log.note(f"這天已到上限 {limit} 小時，停止盯場", "watch_full")
+        self._alert_once(
+            "full",
+            f"{self.venue.display_name} 盯場已到當天上限",
+            f"{self.spec.get('date')} 已訂滿 {limit} 小時，盯場停止。",
+        )
 
     def _alert_once(self, kind: str, title: str, body: str) -> None:
         if kind in self._alerted:
@@ -1070,12 +1153,14 @@ def _drop_watch_target(spec: dict, court_id: str, slot: Slot) -> bool:
 
 def _first_open(courts: list[dict], spec: dict, rules=None):
     """First open slot in range that still fits the day's quota. Returns (court_id, slot, blocked)."""
-    held = holds_from_board(courts)
+    held = _combined_holds(courts, spec)
     blocked = None
     for court in courts:
         for raw in court["slots"]:
             slot = Slot(**raw)
             if not slot.bookable:
+                continue
+            if _already_booked(spec, court["id"], slot):
                 continue
             if not _watch_wants(spec, court["id"], slot):
                 continue

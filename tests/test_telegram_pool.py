@@ -160,6 +160,12 @@ def test_watch_command_and_quota(pool):
     pool.worker.set_watch = set_watch
     text = pool.start_watch_text(None, None, "羽球", {"date": "2026-10-20", "timeFrom": "18:00", "timeTo": "23:00", "court": "A"})
     assert "盯場" in text and pool.worker.watch.spec["courtId"] == "A"
+    assert pool.worker.watch.spec["untilFull"] is False
+    filled = pool.start_watch_text(
+        None, None, "羽球", {"date": "2026-10-20", "timeFrom": "18:00", "timeTo": "23:00", "court": "A", "untilFull": True}
+    )
+    assert pool.worker.watch.spec["untilFull"] is True
+    assert "會一直搶到當天上限才停" in filled
     assert pool.stop_watch_text(None, None).startswith("已停止盯場")
 
     def with_mine(venue, category, query_date):

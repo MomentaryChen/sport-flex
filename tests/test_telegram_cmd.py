@@ -69,7 +69,11 @@ def test_watch_args():
         "timeFrom": "18:00",
         "timeTo": "23:00",
         "court": "",
+        "untilFull": False,
     }
+    filled = parse_watch_args(["明天", "晚上", "滿"], TODAY)
+    assert filled["untilFull"] is True and filled["court"] == "" and filled["timeFrom"] == "18:00"
+    assert parse_watch_args(["10/20", "上限", "羽球場_A"], TODAY)["untilFull"] is True
     assert parse_watch_args(["10/20", "19:00", "羽球場_A"], TODAY)["court"] == "羽球場_A"
     with pytest.raises(ValueError, match="日期"):
         parse_watch_args(["晚上"], TODAY)
@@ -138,3 +142,25 @@ def test_format_watch_lists_exact_targets():
     )
     assert "A 19:00、任一場 21:00" in text
     assert "19:00–22:00" not in text
+    assert "上限" not in text
+
+
+def test_format_watch_mentions_fill_until_cap():
+    text = format_watch(
+        "測試中心",
+        {
+            "running": True,
+            "spec": {
+                "category": "羽球",
+                "date": "2026-10-20",
+                "timeFrom": "18:00",
+                "timeTo": "23:00",
+                "untilFull": True,
+            },
+            "log": [],
+        },
+    )
+    assert "18:00–23:00" in text
+    assert "會一直搶到當天上限才停" in text
+    idle = format_watch("測試中心", {"running": False, "spec": {}, "log": []})
+    assert "/watch 明天 晚上 滿" in idle

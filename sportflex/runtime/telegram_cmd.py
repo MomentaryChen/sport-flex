@@ -18,6 +18,8 @@ PERIODS = {
     "晚上": ("18:00", "23:00"),
     "全天": ("", ""),
 }
+# A time-window watch stops after one booking unless one of these is present.
+_WATCH_FILL = {"滿", "上限", "訂滿"}
 
 PHASES = {
     "idle": "未設定",
@@ -203,9 +205,14 @@ def parse_weekly_args(tokens: list[str]) -> dict:
 
 
 def parse_watch_args(tokens: list[str], today: date) -> dict:
-    """`/watch off` stops. Otherwise a date, an optional period, and an optional court name."""
+    """`/watch off` stops. Otherwise a date, an optional period, and an optional court name.
+
+    ``滿`` (also ``上限`` / ``訂滿``) keeps booking until that day's hour cap.
+    """
     if len(tokens) == 1 and tokens[0].casefold() in {"off", "stop", "停", "停止"}:
         return {"stop": True}
+    until_full = any(token in _WATCH_FILL for token in tokens)
+    tokens = [token for token in tokens if token not in _WATCH_FILL]
     query_date = ""
     window: tuple[str, str] | None = None
     court: list[str] = []
@@ -224,7 +231,14 @@ def parse_watch_args(tokens: list[str], today: date) -> dict:
     if not query_date:
         raise ValueError("請給日期，例如 /watch 明天 晚上")
     start, end = window or ("", "")
-    return {"stop": False, "date": query_date, "timeFrom": start, "timeTo": end, "court": " ".join(court)}
+    return {
+        "stop": False,
+        "date": query_date,
+        "timeFrom": start,
+        "timeTo": end,
+        "court": " ".join(court),
+        "untilFull": until_full,
+    }
 
 
 def parse_book_tokens(tokens: list[str], today: date) -> tuple[str, str, str]:
@@ -388,6 +402,7 @@ def format_watch(venue_name: str, state: dict) -> str:
         return (
             f"{venue_name} 目前沒有盯場\n"
             "設定：/watch 明天 晚上\n"
+            "訂到當天上限：/watch 明天 晚上 滿\n"
             "指定場地：/watch 明天 19:00 A\n"
             "停止：/watch off"
         )
@@ -401,6 +416,8 @@ def format_watch(venue_name: str, state: dict) -> str:
         bits = [spec.get("category") or "", spec.get("date") or "", window or "全天", court]
     lines = [f"盯場 {venue_name} " + " ".join(bit for bit in bits if bit)]
     lines.append("看到空檔會送出訂單，付款要自己完成。停止：/watch off")
+    if spec.get("untilFull") and not targets:
+        lines.append("會一直搶到當天上限才停。")
     log = state.get("log") or []
     if log:
         lines.append(log[-1])

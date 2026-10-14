@@ -225,7 +225,7 @@ class Control:
         return "目前沒有盯場"
 
     def start_watch_text(self, account_id, venue_id, category, spec):
-        self.calls.append(("watch", category, spec["date"], spec["timeFrom"], spec["court"]))
+        self.calls.append(("watch", category, spec["date"], spec["timeFrom"], spec["court"], bool(spec.get("untilFull"))))
         return "盯場中"
 
     def stop_watch_text(self, account_id, venue_id):
@@ -281,7 +281,9 @@ def test_slots_snipe_and_release_commands():
     bot.handle(message("/watch"))
     assert ctrl.calls[-1] == ("watch-state", None)
     bot.handle(message("/watch 明天 晚上 A"))
-    assert ctrl.calls[-1] == ("watch", None, "2026-10-14", "18:00", "A")
+    assert ctrl.calls[-1] == ("watch", None, "2026-10-14", "18:00", "A", False)
+    bot.handle(message("/watch 明天 晚上 滿"))
+    assert ctrl.calls[-1] == ("watch", None, "2026-10-14", "18:00", "", True)
     bot.handle(message("/watch off"))
     assert ctrl.calls[-1] == ("unwatch", None)
     bot.handle(message("/board@SportBot 19:00"))

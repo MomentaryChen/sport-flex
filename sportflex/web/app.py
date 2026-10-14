@@ -112,6 +112,7 @@ class WatchBody(Target):
     timeTo: str = ""
     courtId: str = ""
     interval: int | None = None
+    untilFull: bool = False
 
 
 # ---- routes ---------------------------------------------------------------
