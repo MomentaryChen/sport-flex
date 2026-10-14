@@ -1110,12 +1110,12 @@
       }
       const windowText = state.from ? `${state.from}–${state.to}` : "全天";
       const who = $("accountSelect").selectedOptions[0]?.textContent || state.account;
-      if (!confirm(`用「${who}」盯 ${state.venue.name}\n${state.date} ${state.category} ${windowText}\n\n看到空檔就送出訂單，付款要自己完成。搶訂進行時會先暫停查表。`)) return;
+      if (!confirm(`用「${who}」盯 ${state.venue.name}\n${state.date} ${state.category} ${windowText}\n\n看到空檔就送出訂單，付款要自己完成。開搶前後會暫停查表，結束後繼續。`)) return;
       try {
         showWatch(await api("/api/watch", json(target({
           enabled: true, category: state.category, date: state.date, timeFrom: state.from, timeTo: state.to, courtId: "",
         }))));
-        toast(state.snipe?.running ? "已設定盯場，搶訂結束後才會開始查" : "已開始盯場");
+        toast(state.locked ? "已設定盯場，開搶前後會暫停，結束後繼續" : "已開始盯場");
       } catch (error) {
         toast(error.message, "error");
       }
@@ -1129,6 +1129,17 @@
       }
     }
 
+    function watchSummary(spec) {
+      const targets = spec.targets || [];
+      if (targets.length) {
+        const listed = targets.map((item) => `${item.name || "任一場"} ${item.time}`).join("、");
+        return [spec.date, listed].filter(Boolean).join(" ");
+      }
+      const windowText = spec.timeFrom ? `${spec.timeFrom}–${spec.timeTo}` : "全天";
+      const court = spec.courtName || (spec.courtId ? "指定場" : "任一場");
+      return [spec.date, windowText, court].filter(Boolean).join(" ");
+    }
+
     function showWatch(data) {
       if (!data) return;
       state.watch = data;
@@ -1136,9 +1147,7 @@
       $("watchStart").classList.toggle("hidden", running);
       $("watchRun").classList.toggle("hidden", !running);
       const spec = data.spec || {};
-      const windowText = spec.timeFrom ? `${spec.timeFrom}–${spec.timeTo}` : "全天";
-      const court = spec.courtName || (spec.courtId ? "指定場" : "任一場");
-      $("watchStatus").textContent = [spec.date, windowText, court].filter(Boolean).join(" ");
+      $("watchStatus").textContent = watchSummary(spec);
       $("watchLog").textContent = (data.log || []).slice(-4).join("\n");
       const held = heldHours();
       const limit = state.venue ? state.venue.rules.max_hours_per_day : "";

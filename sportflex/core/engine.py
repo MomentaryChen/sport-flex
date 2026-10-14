@@ -28,6 +28,11 @@ def _no_logout() -> None:
     pass
 
 
+def _no_watch(_spec: dict) -> bool | None:
+    """Snipe jobs without a worker cannot start a watch. None keeps the manual reminder."""
+    return None
+
+
 LOGIN_DROPPED_WHILE_FIRING = "搶訂中登入失效，請立刻在網頁上重新登入，系統會繼續搶到截止為止。"
 
 
@@ -195,6 +200,7 @@ class SnipeJob:
         on_alert: Alert = _no_alert,
         events: EventStore | None = None,
         on_logout: Callable[[], None] = _no_logout,
+        on_watch: Callable[[dict], bool | None] = _no_watch,
     ) -> None:
         self.venue = venue
         self.account_id = account_id
@@ -202,6 +208,7 @@ class SnipeJob:
         self.on_grab = on_grab
         self.on_alert = on_alert
         self.on_logout = on_logout  # the worker starts a Telegram re-login
+        self.on_watch = on_watch  # True when the missed targets were turned into a watch
         self.events = events or NullEventStore()
         self.spec: dict | None = None
         self.log = JobLog(_sink(self.events, account_id, venue.id, "snipe"))
@@ -575,9 +582,18 @@ class SnipeJob:
         targets = (spec or {}).get("targets", [])
         booked = [item for item in targets if item.get("status") == "booked"]
         missed = [item for item in targets if item.get("status") != "booked"]
+        watch_spec = watch_spec_for_misses(spec, self.rules) if spec else None
+        adopted = self.on_watch(watch_spec) if watch_spec else None
+        if adopted:
+            self.log.note("沒搶到的時段已改盯場", "watch_handoff")
         if missed:
             missed_names = "、".join(f"{item['name']} {item['time']}" for item in missed)
-            tail = f"{text}。可以到網頁看執行紀錄，或改用盯場等人退訂。"
+            if adopted:
+                tail = f"{text}。沒搶到的已改盯場，有人退訂會再搶。"
+            elif adopted is False:
+                tail = f"{text}。已經有盯場在跑，這次沒有改掉。"
+            else:
+                tail = f"{text}。可以到網頁看執行紀錄，或改用盯場等人退訂。"
             if booked:
                 got = "、".join(f"{item['bookedName'] or item['name']} {item['time']}" for item in booked)
                 self.on_alert(
@@ -649,6 +665,44 @@ class SnipeJob:
         self._alerted.clear()
 
 
+def watch_spec_for_misses(spec: dict, rules) -> dict | None:
+    """A watch for the targets a snipe did not book. Skipped targets stay skipped."""
+    missed = [
+        item
+        for item in spec.get("targets") or []
+        if item.get("status") not in {"booked", "skipped"} and item.get("time")
+    ]
+    if not missed or not spec.get("targetDate") or not spec.get("category"):
+        return None
+    targets = [
+        {
+            "courtId": item.get("courtId") or "",
+            "name": item.get("name") or item.get("courtId") or "任一場",
+            "time": item["time"],
+        }
+        for item in missed
+    ]
+    court_ids = {item["courtId"] for item in targets}
+    single = targets[0]["courtId"] if len(court_ids) == 1 and targets[0]["courtId"] else ""
+    return {
+        "category": spec["category"],
+        "date": spec["targetDate"],
+        "targets": targets,
+        "timeFrom": min(item["time"] for item in targets),
+        "timeTo": slot_end(max(item["time"] for item in targets), rules.slot_hours),
+        "courtId": single,
+        "courtName": targets[0]["name"] if single else "",
+    }
+
+
+def _watch_label(spec: dict) -> str:
+    targets = spec.get("targets") or []
+    if targets:
+        return "、".join(f"{item.get('name') or '任一場'} {item.get('time')}" for item in targets)
+    window = f"{spec.get('timeFrom') or ''}-{spec.get('timeTo') or ''}".strip("-")
+    return window
+
+
 class WatchJob:
     """Poll an already-released day and grab the first open slot that matches."""
 
@@ -661,6 +715,7 @@ class WatchJob:
         events: EventStore | None = None,
         on_logout: Callable[[], None] = _no_logout,
         account_id: str = "",
+        on_change: Callable[[dict], None] | None = None,
     ) -> None:
         if spec.get("category") not in venue.categories:
             raise ValueError(f"{venue.display_name} 沒有 {spec.get('category')}")
@@ -669,6 +724,7 @@ class WatchJob:
         self.on_grab = on_grab
         self.on_alert = on_alert
         self.on_logout = on_logout  # the worker starts a Telegram re-login
+        self.on_change = on_change or (lambda _spec: None)
         self._alerted: set[str] = set()
         self.log = JobLog(_sink(events or NullEventStore(), account_id, venue.id, "watch"))
         self.running = True
@@ -676,8 +732,7 @@ class WatchJob:
         rules = venue.rules
         self.interval = max(rules.watch_min_interval_sec, int(spec.get("interval") or rules.watch_interval_sec))
         self.log.note(
-            f"開始盯 {venue.display_name} {spec['category']} {spec.get('date')} "
-            f"{spec.get('timeFrom') or ''}-{spec.get('timeTo') or ''}",
+            f"開始盯 {venue.display_name} {spec['category']} {spec.get('date')} {_watch_label(spec)}",
             "watch_started",
             spec=spec,
         )
@@ -730,9 +785,14 @@ class WatchJob:
         except Exception as exc:
             self.log.note(f"搶位失敗：{exc}", "error", "error")
             return
-        self.running = False
+        still = _drop_watch_target(self.spec, court_id, slot) and bool(self.spec.get("targets"))
+        if not still:
+            self.running = False
         self.log.note(f"已送到 {result['url']}", "booked", court=result["court"], time=result["time"])
         self.on_grab(result)
+        if still:
+            self.log.note(f"還有 {len(self.spec['targets'])} 個時段要盯", "watch_remain")
+            self.on_change(self.spec)
 
     def _alert_once(self, kind: str, title: str, body: str) -> None:
         if kind in self._alerted:
@@ -752,19 +812,56 @@ def _match_start(slots: list[Slot], wanted: str):
     return None
 
 
+def _slot_start(slot: Slot) -> str:
+    return slot.time.split("-", 1)[0].strip()
+
+
+def _watch_wants(spec: dict, court_id: str, slot: Slot) -> bool:
+    """A target list matches those starts exactly. Otherwise one court and a time window."""
+    targets = spec.get("targets") or []
+    if targets:
+        start = _slot_start(slot)
+        for item in targets:
+            if item.get("time") != start:
+                continue
+            wanted = item.get("courtId") or ""
+            if wanted and wanted != court_id:
+                continue
+            return True
+        return False
+    wanted = spec.get("courtId") or ""
+    if wanted and court_id != wanted:
+        return False
+    return slot_matches(slot, spec.get("timeFrom") or None, spec.get("timeTo") or None)
+
+
+def _drop_watch_target(spec: dict, court_id: str, slot: Slot) -> bool:
+    """Remove one booked target. False when this watch is a time window, not a target list."""
+    targets = spec.get("targets")
+    if not targets:
+        return False
+    start = _slot_start(slot)
+    for index, item in enumerate(targets):
+        if item.get("time") != start:
+            continue
+        wanted = item.get("courtId") or ""
+        if wanted and wanted != court_id:
+            continue
+        del targets[index]
+        return True
+    return True
+
+
 def _first_open(courts: list[dict], spec: dict, rules=None):
     """First open slot in range that still fits the day's quota. Returns (court_id, slot, blocked)."""
-    wanted = spec.get("courtId") or ""
     held = holds_from_board(courts)
     blocked = None
     for court in courts:
-        if wanted and court["id"] != wanted:
-            continue
         for raw in court["slots"]:
             slot = Slot(**raw)
             if not slot.bookable:
                 continue
-            if not slot_matches(slot, spec.get("timeFrom") or None, spec.get("timeTo") or None):
+            if not _watch_wants(spec, court["id"], slot):
                 continue
             _start, _end, hours = slot_bounds(slot.time)
             if rules is not None:
