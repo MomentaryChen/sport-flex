@@ -466,7 +466,9 @@ class AccountWorker:
         )
 
     def _alert(self, title: str, body: str) -> None:
-        self._event("alert", title, level="warn", data={"body": body})
+        # The pre-release confirmation is the all-clear. Other alerts are problems.
+        level = "info" if title.endswith("開搶前確認") else "warn"
+        self._event("alert", title, level=level, data={"body": body})
         self.notifier.send(title, f"{body}\n帳號：{self.account.display}")
 
     def _event(self, kind: str, message: str, venue: str = "", job: str = "session", **kwargs) -> None:

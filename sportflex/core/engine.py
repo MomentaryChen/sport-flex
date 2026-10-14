@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import base64
+import math
 import time
 from dataclasses import asdict
 from datetime import datetime, timedelta
 from typing import Callable
 
 from sportflex.core.calendar import booking_calendar, calendar_lines
+from sportflex.core.clock import format_clock_offset
 from sportflex.core.coord import Coordinator, nearest_times
 from sportflex.core.events import EventStore, NullEventStore
 from sportflex.core.models import Court, Slot, slot_bounds, slot_matches
@@ -49,6 +51,16 @@ def _no_alert(title: str, body: str) -> None:
 
 def _no_logout() -> None:
     pass
+
+
+def _clock_offset(session: dict) -> float | None:
+    """``clockOffset`` from a session check: seconds the local clock is ahead of the site."""
+    offset = session.get("clockOffset")
+    if isinstance(offset, bool) or not isinstance(offset, (int, float)):
+        return None
+    if not math.isfinite(offset):
+        return None
+    return float(offset)
 
 
 def _no_watch(_spec: dict) -> bool | None:
@@ -384,9 +396,9 @@ class SnipeJob:
 
     def _check_login(self, provider: Provider, spec: dict, now: datetime, opens_at: datetime) -> None:
         """Check the session right after arming, periodically while waiting, and again shortly
-        before release. Logged out: re-check every minute."""
+        before release. Logged out: re-check every minute. Logged in at that last check: one
+        ready notice, so silence means this process did not get that far."""
         near_release = now >= opens_at - timedelta(minutes=self.rules.login_check_lead_min)
-        stage = 2 if near_release else 1
         if spec["phase"] == "need_login":
             if time.time() < self._next_at:
                 return
@@ -401,11 +413,14 @@ class SnipeJob:
         else:
             self._login_stage = 1
         self._last_login_check = time.monotonic()
-        if provider.refresh_session()["loggedIn"]:
+        session = provider.refresh_session()
+        if session["loggedIn"]:
             if spec["phase"] == "need_login":
                 spec["phase"] = "armed"
                 self._alerted.discard("login")
                 self.log.note("已重新登入，繼續等開搶", "login_ok")
+            if near_release:
+                self._announce_ready(spec, _clock_offset(session))
             return
         spec["phase"] = "need_login"
         self._next_at = time.time() + 60
@@ -416,7 +431,8 @@ class SnipeJob:
         if self._prepared:
             return
         spec["phase"] = "preparing"
-        if not provider.refresh_session()["loggedIn"]:
+        session = provider.refresh_session()
+        if not session["loggedIn"]:
             spec["phase"] = "need_login"
             self._next_at = time.time() + 15
             self.log.note("開搶前需要登入，請在畫面上輸入驗證碼", "login_dropped", "warn")
@@ -446,6 +462,9 @@ class SnipeJob:
         spec["phase"] = "ready"
         self.store.save(spec)
         self.log.note(f"已停在 {first.name} 的預約頁，等 {self.rules.release_time}", "ready", court=first.name)
+        # The lead check usually already sent this. A process that woke up inside the last
+        # minute still has to say it is up, or silence looks the same as a dead service.
+        self._announce_ready(spec, _clock_offset(session))
         self._note_offset()
 
     def _existing_holds(self, provider: Provider, spec: dict, courts: list[Court]) -> list[dict]:
@@ -834,6 +853,17 @@ class SnipeJob:
             f"{self.venue.display_name} 回報操作太頻繁",
             f"搶 {self.spec['targetDate']} 時被網站擋下，每次暫停 {self.rules.throttle_backoff_sec:g} 秒後繼續重試。",
         )
+
+    def _announce_ready(self, spec: dict, offset: float | None) -> None:
+        """One notice that the snipe is logged in and still scheduled. Problems already alert;
+        this is the message whose absence means the process never reached the pre-release check."""
+        if "preflight" in self._alerted:
+            return
+        names = "、".join(f"{item.get('name') or '任一場'} {item.get('time')}" for item in spec["targets"])
+        skew = "本機與網站時差未知" if offset is None else f"本機與網站時差 {format_clock_offset(offset)}"
+        body = f"已登入、已排好 {names}、{skew}"
+        self.log.note(body, "preflight", clockOffset=offset)
+        self._alert_once("preflight", f"{self.venue.display_name} 開搶前確認", body)
 
     def _need_login_alert(self, body: str) -> None:
         self.on_logout()

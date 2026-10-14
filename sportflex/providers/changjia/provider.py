@@ -6,6 +6,7 @@ import time
 
 from playwright.sync_api import Page
 
+from sportflex.core.clock import clock_offset_seconds
 from sportflex.core.models import Availability, Court, Slot
 from sportflex.core.venue import Venue
 from sportflex.providers.base import NeedLogin, Provider, ProviderError, Throttled
@@ -40,11 +41,41 @@ class ChangjiaProvider(Provider):
 
     def refresh_session(self) -> dict:
         page = self.page
-        page.goto(BASE + "/", wait_until="domcontentloaded")
+        seen: dict = {}
+
+        def remember(response) -> None:
+            # The document's Date header, taken when the headers arrive — not after the
+            # rest of the page has loaded, which would make the clock look slow.
+            try:
+                if response.request.resource_type != "document":
+                    return
+                if not str(response.url).startswith(BASE):
+                    return
+                seen["at"] = time.time()
+                headers = response.headers or {}
+                seen["date"] = headers.get("date") or headers.get("Date")
+            except Exception:
+                return
+
+        listening = False
+        try:
+            page.on("response", remember)
+            listening = True
+        except Exception:
+            listening = False
+        try:
+            page.goto(BASE + "/", wait_until="domcontentloaded")
+        finally:
+            if listening:
+                try:
+                    page.remove_listener("response", remember)
+                except Exception:
+                    pass
         banner = page.locator("div[onclick='reservationAction()']")
         text = banner.inner_text().strip() if banner.count() else ""
         self.on_list = False
-        return {"loggedIn": "點我登入" not in text, "banner": text}
+        offset = clock_offset_seconds(seen.get("date"), seen["at"]) if "at" in seen else None
+        return {"loggedIn": "點我登入" not in text, "banner": text, "clockOffset": offset}
 
     def captcha(self, username: str, password: str) -> bytes:
         """Fill the login form and return the captcha image.
