@@ -261,7 +261,7 @@ def clip(text: str, limit: int = 3500) -> str:
 def format_release(venue: Venue) -> str:
     release = next_release(venue.rules)
     return (
-        f"{venue.name}\n"
+        f"{venue.display_name}\n"
         f"下一波 {release['targetLabel']}\n"
         f"{release['opensLabel']} 開放\n"
         f"{venue.rules.describe()}"

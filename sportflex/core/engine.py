@@ -128,7 +128,8 @@ def build_board(provider: Provider, venue: Venue, category: str, query_date: str
 
 
 def court_public(court: Court) -> dict:
-    return {"id": court.id, "name": court.name, "venue": court.venue, "minPrice": court.price}
+    # The provider's court record carries the centre's official name. Leave it off the page.
+    return {"id": court.id, "name": court.name, "minPrice": court.price}
 
 
 def grab(provider: Provider, venue: Venue, court: Court, query_date: str, slot: Slot) -> dict:
@@ -137,7 +138,7 @@ def grab(provider: Provider, venue: Venue, court: Court, query_date: str, slot: 
     return {
         "ok": True,
         "venue": venue.id,
-        "venueName": venue.name,
+        "venueName": venue.display_name,
         "court": court.name,
         "date": query_date,
         "time": slot.time,
@@ -222,7 +223,7 @@ class SnipeJob:
 
     def arm(self, category: str, raw_targets: list) -> dict:
         if category not in self.venue.categories:
-            raise ValueError(f"{self.venue.name} 沒有 {category}")
+            raise ValueError(f"{self.venue.display_name} 沒有 {category}")
         targets = validate_targets(self.rules, raw_targets)
         release = next_release(self.rules)
         self.spec = {
@@ -580,12 +581,12 @@ class SnipeJob:
             if booked:
                 got = "、".join(f"{item['bookedName'] or item['name']} {item['time']}" for item in booked)
                 self.on_alert(
-                    f"部分搶到 {self.venue.name} {spec['targetDate']}",
+                    f"部分搶到 {self.venue.display_name} {spec['targetDate']}",
                     f"已搶到：{got}\n未搶到：{missed_names}\n{tail}",
                 )
             else:
                 self.on_alert(
-                    f"沒搶到 {self.venue.name} {spec['targetDate']}",
+                    f"沒搶到 {self.venue.display_name} {spec['targetDate']}",
                     f"{missed_names}\n{tail}",
                 )
 
@@ -628,13 +629,13 @@ class SnipeJob:
         self._next_at = time.time() + self.rules.throttle_backoff_sec
         self._alert_once(
             "throttle",
-            f"{self.venue.name} 回報操作太頻繁",
+            f"{self.venue.display_name} 回報操作太頻繁",
             f"搶 {self.spec['targetDate']} 時被網站擋下，每次暫停 {self.rules.throttle_backoff_sec:g} 秒後繼續重試。",
         )
 
     def _need_login_alert(self, body: str) -> None:
         self.on_logout()
-        self._alert_once("login", f"{self.venue.name} 登入已失效", f"搶 {self.spec['targetDate']}：{body}")
+        self._alert_once("login", f"{self.venue.display_name} 登入已失效", f"搶 {self.spec['targetDate']}：{body}")
 
     def _alert_once(self, kind: str, title: str, body: str) -> None:
         if kind in self._alerted:
@@ -662,7 +663,7 @@ class WatchJob:
         account_id: str = "",
     ) -> None:
         if spec.get("category") not in venue.categories:
-            raise ValueError(f"{venue.name} 沒有 {spec.get('category')}")
+            raise ValueError(f"{venue.display_name} 沒有 {spec.get('category')}")
         self.venue = venue
         self.spec = spec
         self.on_grab = on_grab
@@ -675,7 +676,7 @@ class WatchJob:
         rules = venue.rules
         self.interval = max(rules.watch_min_interval_sec, int(spec.get("interval") or rules.watch_interval_sec))
         self.log.note(
-            f"開始盯 {venue.name} {spec['category']} {spec.get('date')} "
+            f"開始盯 {venue.display_name} {spec['category']} {spec.get('date')} "
             f"{spec.get('timeFrom') or ''}-{spec.get('timeTo') or ''}",
             "watch_started",
             spec=spec,
@@ -694,12 +695,12 @@ class WatchJob:
         except Throttled as exc:
             self.log.note(f"盯場查詢太頻繁：{exc}", "throttled", "warn")
             self._next_at += self.venue.rules.throttle_backoff_sec
-            self._alert_once("throttle", f"{self.venue.name} 回報操作太頻繁", f"盯場 {spec['date']} 被網站擋下，會放慢後繼續。")
+            self._alert_once("throttle", f"{self.venue.display_name} 回報操作太頻繁", f"盯場 {spec['date']} 被網站擋下，會放慢後繼續。")
             return
         except NeedLogin as exc:
             self.log.note(f"盯場查詢失敗，登入已失效：{exc}", "login_dropped", "warn")
             self.on_logout()
-            self._alert_once("login", f"{self.venue.name} 登入已失效", f"盯場 {spec['date']}：請在網頁上重新登入，盯場會繼續。")
+            self._alert_once("login", f"{self.venue.display_name} 登入已失效", f"盯場 {spec['date']}：請在網頁上重新登入，盯場會繼續。")
             return
         except Exception as exc:
             self.log.note(f"盯場查詢失敗：{exc}", "error", "error")
@@ -710,7 +711,7 @@ class WatchJob:
             self.log.quiet(blocked)
             self._alert_once(
                 "quota",
-                f"{self.venue.name} 這天的預約已滿",
+                f"{self.venue.display_name} 這天的預約已滿",
                 f"盯場 {spec['date']}：{blocked}。有人取消後會再搶。",
             )
             return
@@ -724,7 +725,7 @@ class WatchJob:
         except NeedLogin as exc:
             self.log.note(f"搶位失敗，登入已失效：{exc}", "login_dropped", "error")
             self.on_logout()
-            self._alert_once("login", f"{self.venue.name} 登入已失效", f"盯場看到 {slot.time} 有空，但登入失效送不出去，請重新登入。")
+            self._alert_once("login", f"{self.venue.display_name} 登入已失效", f"盯場看到 {slot.time} 有空，但登入失效送不出去，請重新登入。")
             return
         except Exception as exc:
             self.log.note(f"搶位失敗：{exc}", "error", "error")

@@ -1,7 +1,8 @@
 # 新北市新店國民運動中心 — 長佳機電經營
 # 來源：https://www.xdsports.com.tw/zh_TW/stadiums/node/1573717241001
 id: xindian
-name: 新北市新店國民運動中心
+name: 新北市新店國民運動中心  # 正式名稱只留在這份設定，不會出現在畫面、Telegram 或指令輸出
+label: 一號館
 provider: changjia
 params:
   lid: XDSC            # 長佳場地清單的 LID

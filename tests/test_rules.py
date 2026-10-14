@@ -95,10 +95,24 @@ def test_empty_rows_ignored_and_half_rows_rejected():
         validate_targets(BookingRules(), [{"courtId": "A"}])
 
 
+def test_court_listing_hides_official_centre_name():
+    from sportflex.core.engine import court_public
+    from sportflex.core.models import Court
+
+    court = Court(id="1", name="A場", venue="新北市新店國民運動中心", category="羽球")
+    assert "新北市新店國民運動中心" not in str(court_public(court))
+
+
 def test_shipped_venue_configs_load():
     venues = load_venues()
     assert "xindian" in venues
-    assert venues["xindian"].rules.max_bookings_per_day == 2
+    venue = venues["xindian"]
+    assert venue.rules.max_bookings_per_day == 2
+    assert venue.label == "一號館"
+    assert venue.display_name == "一號館"
+    shown = venue.public()
+    assert shown["name"] == "一號館"
+    assert venue.name not in str(shown)
 
 
 def test_any_court_targets():
