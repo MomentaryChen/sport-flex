@@ -602,8 +602,8 @@
       renderSports();
       state.courts = [];
       renderWeekdays([]);
-      renderRoutineTargets([{ courtId: ANY, time: "20:00" }]);
-      renderTargets([{ courtId: ANY, time: "19:00" }]);
+      renderRoutineTargets([{ courtId: ANY, time: preferredTime("20:00") }]);
+      renderTargets([{ courtId: ANY, time: preferredTime("19:00") }]);
       await refreshAll();
     }
 
@@ -701,14 +701,33 @@
       return Math.max(1, Math.floor(rules.max_hours_per_day / rules.slot_hours));
     }
 
-    function timeOptions() {
+    function bookingBounds() {
       const rules = state.venue.rules;
-      const length = rules.slot_hours * 60;
+      const length = Math.round(rules.slot_hours * 60);
+      const open = toMinutes(rules.open_time);
+      const close = toMinutes(rules.close_time);
+      const step = rules.align_minutes;
+      const remainder = open % step;
+      const first = remainder ? open + (step - remainder) : open;
+      return { first, close, length, step, last: close - length };
+    }
+
+    function timeOptions() {
+      const { first, close, length, step } = bookingBounds();
       const options = [];
-      for (let start = 6 * 60; start + length <= 22 * 60; start += rules.align_minutes) {
+      for (let start = first; start + length <= close; start += step) {
         options.push({ value: fmt(start), label: `${fmt(start)}–${fmt(start + length)}` });
       }
       return options;
+    }
+
+    function preferredTime(want) {
+      const bounds = bookingBounds();
+      const minute = toMinutes(want);
+      if (minute >= bounds.first && minute <= bounds.last && minute % bounds.step === 0) return want;
+      const clamped = Math.min(Math.max(minute, bounds.first), bounds.last);
+      const aligned = clamped - (clamped % bounds.step);
+      return fmt(aligned >= bounds.first ? aligned : bounds.first);
     }
 
     function readTargetRows(box) {
@@ -813,7 +832,7 @@
       $("routineOff").classList.toggle("hidden", !data.enabled);
       if (!fill) return;
       renderWeekdays(data.weekdays || []);
-      renderRoutineTargets((data.targets && data.targets.length) ? data.targets : [{ courtId: ANY, time: "20:00" }]);
+      renderRoutineTargets((data.targets && data.targets.length) ? data.targets : [{ courtId: ANY, time: preferredTime("20:00") }]);
     }
 
     async function loadRoutine() {
@@ -1256,7 +1275,7 @@
         const rows = readTargets();
         const routineRows = $("routineTargets").querySelector(".target") ? readTargetRows($("routineTargets")) : null;
         state.courts = data.courts;
-        renderTargets(rows.length ? rows : [{ courtId: ANY, time: "19:00" }]);
+        renderTargets(rows.length ? rows : [{ courtId: ANY, time: preferredTime("19:00") }]);
         if (routineRows) renderRoutineTargets(routineRows);
       } catch (error) {
         toast(error.message, "error");
@@ -1614,17 +1633,21 @@
     $("venueSelect").onchange = (event) => selectVenue(event.target.value);
     $("accountSelect").onchange = (event) => selectAccount(event.target.value);
     $("reload").onclick = () => loadBoard({ fresh: true });
+    function nextStart(lastTime, fallback) {
+      if (!lastTime) return preferredTime(fallback);
+      const { length, last } = bookingBounds();
+      return preferredTime(fmt(Math.min(toMinutes(lastTime) + length, last)));
+    }
+
     $("addTarget").onclick = () => {
       const rows = readTargets();
       const last = rows[rows.length - 1];
-      const next = last ? fmt(Math.min(toMinutes(last.time) + state.venue.rules.slot_hours * 60, 21 * 60)) : "19:00";
-      renderTargets([...rows, { courtId: ANY, time: next }]);
+      renderTargets([...rows, { courtId: ANY, time: nextStart(last && last.time, "19:00") }]);
     };
     $("addRoutineTarget").onclick = () => {
       const rows = readTargetRows($("routineTargets"));
       const last = rows[rows.length - 1];
-      const next = last ? fmt(Math.min(toMinutes(last.time) + state.venue.rules.slot_hours * 60, 21 * 60)) : "20:00";
-      renderRoutineTargets([...rows, { courtId: ANY, time: next }]);
+      renderRoutineTargets([...rows, { courtId: ANY, time: nextStart(last && last.time, "20:00") }]);
     };
     $("routineBtn").onclick = saveRoutine;
     $("routineOff").onclick = clearRoutine;

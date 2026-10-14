@@ -12,9 +12,7 @@ import threading
 
 from sportflex.core.rules import BookingRules
 
-# Same window the booking page offers: first start 06:00, last slot ends at 22:00.
-DAY_OPEN_MIN = 6 * 60
-DAY_CLOSE_MIN = 22 * 60
+# How far a blocked account may move, in either direction.
 SHIFT_SPAN_MIN = 4 * 60
 
 
@@ -27,16 +25,20 @@ def demand_cap(rules: BookingRules, court_count: int) -> int:
 
 
 def nearest_times(rules: BookingRules, origin: str, span_min: int = SHIFT_SPAN_MIN) -> list[str]:
-    """Aligned start times around `origin`, later slot first, then the earlier one, and so on."""
+    """Aligned start times around `origin`, later slot first, then the earlier one, and so on.
+
+    A candidate is kept only when the whole slot fits in the venue's open_time–close_time.
+    """
     origin_min = _minutes(origin)
     step = rules.align_minutes
     slot = int(round(rules.slot_hours * 60))
-    last = DAY_CLOSE_MIN - slot
+    first = _minutes(rules.open_time)
+    last = _minutes(rules.close_time) - slot
     found = []
     for delta in range(step, span_min + 1, step):
         for sign in (1, -1):
             minute = origin_min + sign * delta
-            if minute < DAY_OPEN_MIN or minute > last or minute % step:
+            if minute < first or minute > last or minute % step:
                 continue
             found.append(_hhmm(minute))
     return found
