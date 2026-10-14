@@ -15,6 +15,7 @@ class FakePool:
 
 def _client(pool: FakePool) -> TestClient:
     app_module.app.state.pool = pool
+    app_module.app.state.ui_token = ""
     return TestClient(app_module.app)  # no `with`: the real lifespan would start Chrome
 
 

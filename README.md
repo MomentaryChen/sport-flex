@@ -64,7 +64,8 @@ categories: [羽球]
 - 有設定 Telegram 時，驗證碼和搶到的結果會傳過去。在 `.env` 加上 `SPORT_FLEX_TELEGRAM_BOT_TOKEN` 與 `SPORT_FLEX_TELEGRAM_CHAT_ID`。
 - Telegram 的備援：`SPORT_FLEX_DISCORD_WEBHOOK_URL`（Discord webhook），以及 `SPORT_FLEX_NTFY_URL`（ntfy 主題網址，例如 `https://ntfy.sh/你的主題`；私人主題再加 `SPORT_FLEX_NTFY_TOKEN`）。有填就會和 Telegram 一起送出搶到、付款提醒和登出，其中一條送不到時另一條仍會到。驗證碼圖片仍只走 Telegram，因為要能直接回覆。ntfy 預設優先級 4，可用 `SPORT_FLEX_NTFY_PRIORITY` 設成 1–5。
 - `python -m sportflex --help` 可以用指令查場、看時段、送出預約。
-- Docker：`docker compose -f infra/docker-compose.yml up -d --build`，然後開 `http://127.0.0.1:8765/`。
+- Docker：`docker compose -f infra/docker-compose.yml up -d --build`，然後開 `http://127.0.0.1:8765/`。瀏覽器掛掉會自動重開；重開不了時容器會自己重啟。
+- 要讓其他電腦連進來（`--host 0.0.0.0`）時，請在 `.env` 設 `SPORT_FLEX_UI_TOKEN`，第一次開 `/?token=…` 之後就記住了。
 
 ## 免責聲明
 
