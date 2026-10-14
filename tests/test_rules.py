@@ -50,6 +50,14 @@ def test_bad_release_time_rejected():
         BookingRules(release_time="25:00")
 
 
+def test_hours_must_fit_one_slot():
+    with pytest.raises(ValidationError, match="close_time"):
+        BookingRules(open_time="18:00", close_time="09:00")
+    with pytest.raises(ValidationError, match="營業時間"):
+        BookingRules(open_time="21:00", close_time="21:30")
+    assert BookingRules(open_time="08:00", close_time="24:00").close_time == "24:00"
+
+
 def test_targets_valid():
     targets = validate_targets(BookingRules(), [
         {"courtId": "A", "name": "A", "time": "19:00"},
@@ -83,6 +91,15 @@ def test_quota_counts_hours_already_held():
     assert holds_from_board(board) == [{"courtId": "A", "name": "場A", "time": "08:00 - 09:00", "hours": 1.0}]
 
 
+def test_targets_outside_venue_hours():
+    rules = BookingRules(open_time="09:00", close_time="21:00")
+    with pytest.raises(ValueError, match="營業時間"):
+        validate_targets(rules, [{"courtId": "A", "time": "08:00"}])
+    with pytest.raises(ValueError, match="營業時間"):
+        validate_targets(rules, [{"courtId": "A", "time": "21:00"}])
+    assert validate_targets(rules, [{"courtId": "A", "time": "20:00"}])[0]["time"] == "20:00"
+
+
 def test_targets_not_on_the_hour():
     with pytest.raises(ValueError, match="對齊"):
         validate_targets(BookingRules(), [{"courtId": "A", "time": "19:30"}])
@@ -108,6 +125,8 @@ def test_shipped_venue_configs_load():
     assert "xindian" in venues
     venue = venues["xindian"]
     assert venue.rules.max_bookings_per_day == 2
+    assert venue.rules.open_time == "06:00"
+    assert venue.rules.close_time == "22:00"
     assert venue.label == "一號館"
     assert venue.display_name == "一號館"
     shown = venue.public()

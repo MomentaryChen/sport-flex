@@ -54,6 +54,45 @@ def _payload():
     return venue, result
 
 
+def test_target_times_follow_venue_hours():
+    """A venue that closes at 21:00 must not offer a 21:00 start or a 06:00 start."""
+    playwright_api = pytest.importorskip("playwright.sync_api")
+    venue = get_venue("xindian")
+    public = venue.public()
+    public["rules"] = {**public["rules"], "open_time": "09:00", "close_time": "21:00"}
+    server = _serve()
+    port = server.server_address[1]
+    held = []
+    try:
+        with playwright_api.sync_playwright() as playwright:
+            try:
+                browser = playwright.chromium.launch(channel="chrome", headless=True)
+            except Exception as exc:
+                pytest.skip(f"Chrome not available: {exc}")
+            page = browser.new_page(viewport={"width": 1100, "height": 900}, color_scheme="light")
+            page.route("**/*", lambda route: _route(route, venue, held, public))
+            page.goto(f"http://127.0.0.1:{port}/index.html", wait_until="domcontentloaded")
+            page.wait_for_selector("#targets .t-time")
+            options = page.locator("#targets .t-time option").all_text_contents()
+            assert options[0].startswith("09:00")
+            assert options[-1].startswith("20:00")
+            assert all(not item.startswith(("06:00", "08:00", "21:00")) for item in options)
+            assert page.locator("#targets .t-time").input_value() == "19:00"
+            page.locator("#addTarget").click()
+            assert page.locator("#targets .t-time").nth(1).input_value() == "20:00"
+            for route in held:
+                route.fulfill(status=204, body=b"")
+            held.clear()
+            browser.close()
+    finally:
+        for route in held:
+            try:
+                route.fulfill(status=204, body=b"")
+            except Exception:
+                pass
+        server.shutdown()
+
+
 def test_order_sheet_offers_calendar_file_and_google_link(tmp_path):
     playwright_api = pytest.importorskip("playwright.sync_api")
     venue, result = _payload()
@@ -142,7 +181,7 @@ def _buttons_fit(sheet) -> None:
         assert bounds["x"] + bounds["width"] <= box["x"] + box["width"] + 1
 
 
-def _route(route, venue, held) -> None:
+def _route(route, venue, held, public=None) -> None:
     url = route.request.url
     if "fonts.g" in url:
         route.abort()
@@ -155,7 +194,7 @@ def _route(route, venue, held) -> None:
         route.fulfill(json={
             "ok": True,
             "instance": "test",
-            "venues": [venue.public()],
+            "venues": [public or venue.public()],
             "accounts": [{
                 "id": "default", "provider": venue.provider, "label": "我",
                 "username": "me", "ready": True, "error": "",
