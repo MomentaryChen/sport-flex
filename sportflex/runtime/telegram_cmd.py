@@ -6,6 +6,7 @@ import re
 from datetime import date, timedelta
 
 from sportflex.core.calendar import calendar_lines
+from sportflex.core.refund import reminder_line
 from sportflex.core.models import Slot, slot_matches
 from sportflex.core.routine import weekday_token
 from sportflex.core.rules import next_release
@@ -452,6 +453,9 @@ def format_grab(result: dict) -> str:
         if order.get("carrier"):
             lines.append(f"發票請選手機載具 {order['carrier']}")
         lines.extend(calendar_lines(result))
+        planned = reminder_line(result)
+        if planned:
+            lines.append(planned)
         if order.get("warning"):
             lines.append(f"注意：{order['warning']}")
     else:

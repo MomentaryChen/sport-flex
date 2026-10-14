@@ -1,3 +1,5 @@
+import time
+
 import pytest
 
 from sportflex.core.accounts import Account
@@ -164,10 +166,12 @@ class Unpaid:
         return self.pending
 
 
-def watcher(monkeypatch):
+def watcher(monkeypatch, tmp_path):
     from sportflex.core.notify import ConsoleNotifier
     from sportflex.runtime.worker import AccountWorker
 
+    monkeypatch.setattr("sportflex.core.storage.BOOKINGS_DIR", tmp_path)
+    monkeypatch.setattr("sportflex.core.storage.SNIPES_DIR", tmp_path / "snipes")
     worker = AccountWorker(account(), {}, ConsoleNotifier())
     alerts = []
     monkeypatch.setattr(worker, "_alert", lambda title, body: alerts.append((title, body)))
@@ -182,30 +186,33 @@ def due(worker):
         item["next"] = 0
 
 
-def test_reminds_once_when_still_unpaid_then_reports_the_end(monkeypatch):
-    worker, alerts = watcher(monkeypatch)
+def test_reminds_once_when_still_unpaid_then_reports_the_end(monkeypatch, tmp_path):
+    worker, alerts = watcher(monkeypatch, tmp_path)
     worker._check_payments(Unpaid(["L1"]))
     assert not alerts  # not five minutes yet
     due(worker)
     worker._check_payments(Unpaid(["L1"]))
     assert len(alerts) == 1 and "還沒付款" in alerts[0][0] and "待付款" in alerts[0][1] and "/ABC1234" in alerts[0][1]
+    assert worker._payments[0]["stage"] == "watch"
     due(worker)
-    worker._check_payments(Unpaid(["L1"]))  # deadline passed but the site hasn't cleared it: wait, no message
+    worker._check_payments(Unpaid(["L1"]))  # still inside the payment window: wait, no second message
     assert len(alerts) == 1
+    worker._payments[0]["placed"] = time.time() - worker._payments[0]["timeout"] - 120
     due(worker)
     worker._check_payments(Unpaid([]))
     assert len(alerts) == 2 and "已結束" in alerts[1][0] and not worker._payments
+    assert not worker._bookings
 
 
-def test_no_reminder_when_already_paid(monkeypatch):
-    worker, alerts = watcher(monkeypatch)
+def test_no_reminder_when_already_paid(monkeypatch, tmp_path):
+    worker, alerts = watcher(monkeypatch, tmp_path)
     due(worker)
     worker._check_payments(Unpaid([]))
     assert not alerts and not worker._payments
 
 
-def test_unknown_status_retries_then_gives_up(monkeypatch):
-    worker, alerts = watcher(monkeypatch)
+def test_unknown_status_retries_then_gives_up(monkeypatch, tmp_path):
+    worker, alerts = watcher(monkeypatch, tmp_path)
     for _ in range(10):
         due(worker)
         worker._check_payments(Unpaid(None))

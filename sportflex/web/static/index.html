@@ -1424,8 +1424,12 @@
           ].filter(Boolean).join("\n")
         : "停在訂單確認頁，還沒送出訂單；付款不會自動按。" + (result.url ? `\n${result.url}` : "");
       const refund = $("resultRefund");
-      if (calendar && calendar.refund) {
-        refund.textContent = "取消規則：" + calendar.refund;
+      const reminder = (result.refundReminder && result.refundReminder.line) || "";
+      const refundLines = [];
+      if (calendar && calendar.refund) refundLines.push("取消規則：" + calendar.refund);
+      if (reminder) refundLines.push(reminder);
+      if (refundLines.length) {
+        refund.textContent = refundLines.join("\n");
         refund.classList.remove("hidden");
       } else {
         refund.textContent = "";

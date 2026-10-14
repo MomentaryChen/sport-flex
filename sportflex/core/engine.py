@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from typing import Callable
 
 from sportflex.core.calendar import booking_calendar, calendar_lines
+from sportflex.core.refund import plan_refund_reminder, reminder_line
 from sportflex.core.clock import format_clock_offset
 from sportflex.core.coord import Coordinator, nearest_times
 from sportflex.core.events import EventStore, NullEventStore
@@ -188,6 +189,9 @@ def grab(provider: Provider, venue: Venue, court: Court, query_date: str, slot: 
     calendar = booking_calendar(venue, result)
     if calendar:
         result["calendar"] = calendar
+    reminder = plan_refund_reminder(venue, result)
+    if reminder:
+        result["refundReminder"] = reminder
     return result
 
 
@@ -220,6 +224,9 @@ def announce_grab(notifier: Notifier, account_label: str, result: dict) -> None:
     if order.get("carrier"):
         lines.append(f"發票請選「手機載具」，填 {order['carrier']}")
     lines.extend(calendar_lines(result))
+    planned = reminder_line(result)
+    if planned:
+        lines.append(planned)
     if order.get("warning"):
         lines.append(f"注意：{order['warning']}")
     notifier.send(f"✅ 搶到 {result['venueName']} {result['court']}", head + "\n".join(lines))

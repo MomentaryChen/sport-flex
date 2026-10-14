@@ -59,6 +59,7 @@ Change the short name whenever you like, for example “Court 1” or “Weekday
 ## Also
 
 - Weekly slots: for example every Tuesday and Thursday at 20:00, any court. After you save it once, the 14th day is armed automatically before each day’s 06:00 release. Telegram: `/weekly 二四 20:00`.
+- A paid booking gets a morning reminder the day before the no-refund cutoff. The cutoff is read from the venue’s cancellation rule, for example “no refund within 2 days of the booking”. You still cancel it yourself at the counter.
 - Watch slots that are already open but full, and place the order when one frees up.
 - One platform can have several accounts, each with its own browser, grabbing at the same time.
 - With Telegram configured, captchas and successful bookings are sent there. Add `SPORT_FLEX_TELEGRAM_BOT_TOKEN` and `SPORT_FLEX_TELEGRAM_CHAT_ID` to `.env`.

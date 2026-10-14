@@ -23,9 +23,10 @@ from sportflex.core.engine import (
 from sportflex.core.events import EventStore, NullEventStore
 from sportflex.core.models import Slot, slot_bounds
 from sportflex.core.notify import Notifier
+from sportflex.core.refund import plan_refund_reminder
 from sportflex.core.routine import apply_saved_routine, build_routine, describe_routine, skip_wave
 from sportflex.core.rules import next_release, quota_reason
-from sportflex.core.storage import RoutineStore, WatchStore
+from sportflex.core.storage import BookingStore, RoutineStore, WatchStore
 from sportflex.core.venue import Venue
 from sportflex.providers import create_provider
 from sportflex.providers.base import Provider, ProviderError
@@ -46,6 +47,19 @@ DEFAULT_PAY_TIMEOUT_SEC = 590  # the site's OnlinePaymentTimeoutSeconds, when th
 BOARD_CACHE_SEC = 30  # reuse one venue/sport/date browse; the page reload button asks for a fresh scan
 RELOGIN_HINT = "會先嘗試自動辨識驗證碼；不行時圖片會傳到 Telegram，直接回覆就能重新登入。"
 _BUSY_SNIPE_PHASES = frozenset({"firing", "preparing", "ready"})
+
+
+def _booking_snapshot(result: dict) -> dict:
+    """The fields a refund reminder needs, kept beside the unpaid-order watch."""
+    order = result.get("order") or {}
+    return {
+        "venue": result.get("venue") or "",
+        "venueName": result.get("venueName") or "",
+        "court": result.get("court") or "",
+        "date": result.get("date") or "",
+        "time": result.get("time") or "",
+        "order": {"no": order.get("no") or "", "luid": order.get("luid") or "", "paymentUrl": order.get("paymentUrl") or ""},
+    }
 
 
 def _board_complete(events: list[dict]) -> bool:
@@ -119,6 +133,7 @@ class AccountWorker:
         self._hold_until = 0.0  # a captcha is waiting for its code: keep the page on the login form
         self._prompted_at = 0.0
         self._payments: list[dict] = []  # placed orders we're watching until they're paid or expire
+        self._bookings: list[dict] = BookingStore(self.account.id).load()
         self._logout_reason = "登入已失效"
         self._prompts = 0  # captchas sent this round without a reply
         self._gave_up = False
@@ -258,13 +273,19 @@ class AccountWorker:
         if self.watch and not self.watch.running:
             WatchStore(self.account.id).clear()
         self._check_payments(provider)
+        self._check_refunds()
         self._maybe_prompt_relogin(provider)
 
     # ---- unpaid orders ---------------------------------------------------
 
     def _track_payment(self, result: dict) -> None:
         order = result.get("order") or {}
+        if not order:
+            return
         if not (order.get("luid") and order.get("lid")):
+            # No online payment to watch. A booking that never asked for a card is already held.
+            if not str(order.get("paymentUrl") or "").strip():
+                self._schedule_refund(result)
             return
         placed = time.time()
         self._payments.append(
@@ -276,12 +297,15 @@ class AccountWorker:
                 "stage": "remind",
                 "next": placed + PAY_REMIND_SEC,
                 "misses": 0,
+                "booking": _booking_snapshot(result),
             }
         )
 
     def _check_payments(self, provider: Provider) -> None:
-        """PAY_REMIND_SEC after an order: still on the unpaid list -> remind once. After the site's
-        deadline: report that it is off the list (paid, or cancelled for not paying)."""
+        """PAY_REMIND_SEC after an order: still on the unpaid list -> remind once. While the payment
+        window is open, leaving that list means it was paid, so the refund reminder can be armed.
+        After the site's deadline, report that it is off the list (paid at the last moment, or
+        cancelled for not paying) and do not arm a refund reminder."""
         now = time.time()
         for item in list(self._payments):
             if now < item["next"]:
@@ -300,7 +324,7 @@ class AccountWorker:
             unpaid = item["luid"] in pending
             if item["stage"] == "remind":
                 if not unpaid:
-                    self._event("payment_done", f"訂單 {item['no']} 已不在待付款清單（已付款）")
+                    self._note_paid(item)
                     self._payments.remove(item)
                     continue
                 left = max(0, int(item["timeout"] - (now - item["placed"])) // 60)
@@ -311,19 +335,88 @@ class AccountWorker:
                     f"訂單 {item['no']} 還沒付款，約 {left} 分鐘後會被取消。\n"
                     f"打開連結 → 點「待付款」→ 前往付款\n{item['paymentUrl']}{carrier}",
                 )
-                item.update(stage="final", next=item["placed"] + item["timeout"] + 60)
-            elif unpaid:  # the site hasn't cleared it yet
-                if now > item["placed"] + item["timeout"] + 5 * 60:
-                    self._payments.remove(item)
+                item.update(stage="watch", next=now + 60)
+                continue
+            if not unpaid:
+                if now <= item["placed"] + item["timeout"]:
+                    self._note_paid(item)
                 else:
-                    item["next"] = now + 60
-            else:
-                self._event("payment_closed", f"訂單 {item['no']} 已不在待付款清單")
-                self._alert(
-                    f"訂單 {item['no']} 已結束",
-                    f"{item['label']} 已不在待付款清單：有付款就已完成；沒付款的話已因逾時被取消。",
-                )
+                    self._event("payment_closed", f"訂單 {item['no']} 已不在待付款清單")
+                    self._alert(
+                        f"訂單 {item['no']} 已結束",
+                        f"{item['label']} 已不在待付款清單：有付款就已完成；沒付款的話已因逾時被取消。",
+                    )
                 self._payments.remove(item)
+                continue
+            if now > item["placed"] + item["timeout"] + 5 * 60:  # the site hasn't cleared it yet
+                self._payments.remove(item)
+            else:
+                item["next"] = now + 60
+
+    def _note_paid(self, item: dict) -> None:
+        self._event("payment_done", f"訂單 {item['no']} 已不在待付款清單（已付款）")
+        self._schedule_refund(item.get("booking") or {})
+
+    def _schedule_refund(self, result: dict) -> None:
+        """Remember a paid booking so the morning before the no-refund cutoff can ask once."""
+        venue = self.venues.get(str(result.get("venue") or ""))
+        if venue is None:
+            return
+        plan = plan_refund_reminder(venue, result)
+        if not plan or plan.get("passed") or not plan.get("remindAt"):
+            return
+        if any(item.get("key") == plan["key"] for item in self._bookings):
+            return
+        self._bookings.append(
+            {
+                "key": plan["key"],
+                "venue": venue.id,
+                "title": plan["title"],
+                "body": plan["body"],
+                "deadline": plan["deadline"],
+                "remindAt": plan["remindAt"],
+                "reminded": False,
+            }
+        )
+        self._save_bookings()
+
+    def _check_refunds(self, now: datetime | None = None) -> None:
+        """Send the cancel-or-keep reminder once, then drop the booking after the cutoff."""
+        if not self._bookings:
+            return
+        kept: list[dict] = []
+        changed = False
+        for item in self._bookings:
+            try:
+                deadline = datetime.fromisoformat(item["deadline"])
+                remind_at = datetime.fromisoformat(item["remindAt"])
+            except (KeyError, TypeError, ValueError):
+                changed = True
+                continue
+            if deadline.tzinfo is None or remind_at.tzinfo is None:
+                changed = True
+                continue
+            current = (now or datetime.now(deadline.tzinfo)).astimezone(deadline.tzinfo)
+            if current >= deadline:
+                changed = True
+                continue
+            if not item.get("reminded") and current >= remind_at:
+                self._alert(item.get("title") or "要不要取消？", item.get("body") or "", level="info")
+                self._event(
+                    "refund_reminder",
+                    item.get("title") or "退費期限",
+                    venue=item.get("venue") or "",
+                    data={"body": item.get("body") or ""},
+                )
+                item["reminded"] = True
+                changed = True
+            kept.append(item)
+        if changed:
+            self._bookings = kept
+            self._save_bookings()
+
+    def _save_bookings(self) -> None:
+        BookingStore(self.account.id).save(self._bookings)
 
     # ---- staying logged in -----------------------------------------------
 
@@ -476,9 +569,10 @@ class AccountWorker:
             "auto",
         )
 
-    def _alert(self, title: str, body: str) -> None:
-        # The pre-release confirmation is the all-clear. Other alerts are problems.
-        level = "info" if title.endswith("開搶前確認") else "warn"
+    def _alert(self, title: str, body: str, *, level: str | None = None) -> None:
+        # The pre-release confirmation is the all-clear. A refund reminder is a question, not a problem.
+        if level is None:
+            level = "info" if title.endswith("開搶前確認") else "warn"
         self._event("alert", title, level=level, data={"body": body})
         self.notifier.send(title, f"{body}\n帳號：{self.account.display}")
 
