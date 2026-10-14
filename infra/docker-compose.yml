@@ -24,8 +24,9 @@ services:
     environment:
       TZ: Asia/Taipei
       SPORT_FLEX_CHROME_NO_SANDBOX: "1"
-      # Telegram captchas from this container are tagged [docker · 帳號], distinct from
-      # a local `python -m sportflex ui` that shares the same bot.
+      # Shown on captcha photos as [docker · 帳號]. Do not also run
+      # `python -m sportflex ui` with the same bot token: the second process
+      # refuses to start, and a live clash pauses ordering on both sides.
       SPORT_FLEX_INSTANCE: docker
     ports:
       # The UI has no login of its own; publish on localhost only.

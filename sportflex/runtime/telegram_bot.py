@@ -23,8 +23,8 @@ from sportflex.runtime.telegram_cmd import (
 
 HELP = (
     "登入失效時會先讓辨識送出兩次。兩次都不對才把圖片傳過來，直接回覆那張圖片上的英數就會重新登入。\n"
-    "圖片開頭是 [伺服器 · 帳號]。本機、Docker 或多個帳號同時要登入時，回覆對應的那一張。\n"
-    "伺服器名稱可用 SPORT_FLEX_INSTANCE 自訂（例如 docker、筆電）。\n"
+    "圖片開頭是 [伺服器 · 帳號]。多個帳號同時要登入時，回覆對應的那一張。\n"
+    "伺服器名稱可用 SPORT_FLEX_INSTANCE 自訂（例如 docker、筆電）。同一個 bot 不要開兩份程式。\n"
     "\n"
     "/status  登入與搶訂狀態\n"
     "/login [帳號]  重新取驗證碼\n"
@@ -48,6 +48,23 @@ HELP = (
 
 CONFIRM_SEC = 180
 ALIASES = {"/start": "/help", "/grab": "/book", "/board": "/slots", "/stop": "/cancel"}
+# A second live poller backs off for CONFLICT_RETRY_SEC. The startup probe waits
+# longer than that, so a success in between is the other process exiting, not its gap.
+CONFLICT_RETRY_SEC = 3
+CONFLICT_PAUSE_AFTER = 6
+CONFLICT_SEEN = (
+    "[Telegram] 409 Conflict：另一個實例正在對同一個 bot 呼叫 getUpdates。"
+    "同一個帳號若在兩邊同時搶會重複下單。若衝突持續，這台會暫停下單。"
+)
+WEBHOOK_CONFLICT = (
+    "[Telegram] 409 Conflict：這個 bot 設了 webhook，不能同時 long poll。"
+    "指令收不到。請刪除 webhook，或只留一個收訊息的程式。"
+)
+OTHER_INSTANCE_STARTUP = (
+    "另一個 Sport Flex 正在使用同一個 Telegram bot（409 Conflict）。\n"
+    "這份不啟動，避免同一個帳號在兩台機器上重複下單。\n"
+    "多帳號錯開只在同一個程式裡有效。請先關掉另一個實例再啟動。"
+)
 
 
 class Relogin(Protocol):
@@ -62,10 +79,28 @@ class Relogin(Protocol):
     def login_with(self, account_id: str, code: str) -> dict: ...
 
 
+def classify_poll_error(method: str, exc: BaseException) -> str:
+    """Why a getUpdates call failed, when it is the two-poller conflict.
+
+    ``instance`` means another process is already calling getUpdates on this token.
+    ``webhook`` means a webhook is set, which is a configuration clash rather than a
+    second Sport Flex. Anything else is a normal transport error.
+    """
+    if method != "getUpdates":
+        return ""
+    text = str(exc)
+    lowered = text.lower()
+    if "409" not in text and "conflict" not in lowered:
+        return ""
+    if "webhook" in lowered:
+        return "webhook"
+    return "instance"
+
+
 class TelegramBot:
     """Two-way Telegram for one configured chat. Replies to a captcha photo log that account back
     in, and /help lists the other commands (slots, snipe, book). Long-polls getUpdates on its own
-    thread; Telegram allows one poller per bot token, so run one server per bot."""
+    thread. Telegram allows one poller per bot token; a second poller is refused at startup."""
 
     def __init__(
         self,
@@ -84,6 +119,10 @@ class TelegramBot:
         self._confirm: dict | None = None  # a /book waiting for /ok
         self._confirm_gen = 0
         self.sync_commands = False  # tests run browser-backed commands inline
+        self.on_booking_pause: Callable[[bool], None] | None = None
+        self.conflict_retry_sec = CONFLICT_RETRY_SEC
+        self.conflict_pause_after = CONFLICT_PAUSE_AFTER
+        self._poll_conflict = ""
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._offset = 0
@@ -128,18 +167,88 @@ class TelegramBot:
         if updates:
             self._offset = updates[-1]["update_id"] + 1
 
+    def probe_other_instance(self, attempts: int = 3, pause: float = 6.0) -> str:
+        """Return a refusal message when another live poller holds this bot, else ``""``.
+
+        A single 409 can be our own previous process still closing its long poll, so a
+        conflict has to still be there on the last try. ``pause`` is longer than this
+        process's retry (3s) and the previous build's 5s backoff, so a success in
+        between is the other process exiting, not its gap between polls.
+        """
+        last = "ok"
+        for attempt in range(attempts):
+            last = self._probe_once()
+            if last == "webhook":
+                print(WEBHOOK_CONFLICT, flush=True)
+                return ""
+            if last == "error":
+                return ""
+            if last == "ok" and attempt == 0:
+                return ""
+            if attempt + 1 < attempts:
+                time.sleep(pause)
+        if last == "instance":
+            return OTHER_INSTANCE_STARTUP
+        return ""
+
+    def _probe_once(self) -> str:
+        try:
+            # No offset: a failed or overlapping probe must not confirm the other
+            # process's pending commands.
+            self._invoke("getUpdates", {"timeout": 0}, None, timeout=10)
+        except Exception as exc:
+            kind = classify_poll_error("getUpdates", exc)
+            if kind:
+                return kind
+            print(f"[Telegram] 啟動檢查失敗：{exc}", flush=True)
+            return "error"
+        return "ok"
+
     def _poll(self) -> None:
+        streak = 0
+        paused = False
+        webhook_warned = False
         while not self._stop.is_set():
+            self._poll_conflict = ""
             updates = self._call("getUpdates", {"offset": self._offset, "timeout": 25}, timeout=35)
+            kind = self._poll_conflict
+            if kind == "instance":
+                streak += 1
+                if streak == 1:
+                    print(CONFLICT_SEEN, flush=True)
+                if not paused and streak >= self.conflict_pause_after:
+                    paused = True
+                    self._notify_pause(True)
+                self._stop.wait(self.conflict_retry_sec)
+                continue
+            if kind == "webhook":
+                if not webhook_warned:
+                    print(WEBHOOK_CONFLICT, flush=True)
+                    webhook_warned = True
+                self._stop.wait(max(self.conflict_retry_sec, 30))
+                continue
             if updates is None:
                 self._stop.wait(5)
                 continue
+            streak = 0
+            if paused:
+                paused = False
+                self._notify_pause(False)
             for update in updates:
                 self._offset = update["update_id"] + 1
                 try:
                     self.handle(update)
                 except Exception as exc:
                     self.send_text(f"處理訊息時出錯：{exc}")
+
+    def _notify_pause(self, paused: bool) -> None:
+        callback = self.on_booking_pause
+        if callback is None:
+            return
+        try:
+            callback(paused)
+        except Exception as exc:
+            print(f"[Telegram] 無法切換下單狀態：{exc}", flush=True)
 
     def handle(self, update: dict) -> None:
         message = update.get("message") or {}
@@ -359,12 +468,21 @@ class TelegramBot:
 
     def _call(self, method: str, params: dict, files: dict | None = None, timeout: float = 15):
         try:
-            if self._api:
-                return self._api(method, params, files)
-            return self._http(method, params, files, timeout)
+            return self._invoke(method, params, files, timeout)
         except Exception as exc:
+            kind = classify_poll_error(method, exc)
+            if kind:
+                # The poll loop reports a conflict once. Repeating it every retry is the
+                # 409 flood in the startup log.
+                self._poll_conflict = kind
+                return None
             print(f"[Telegram] {method} 失敗：{exc}", flush=True)
             return None
+
+    def _invoke(self, method: str, params: dict, files: dict | None = None, timeout: float = 15):
+        if self._api:
+            return self._api(method, params, files)
+        return self._http(method, params, files, timeout)
 
     def _http(self, method: str, params: dict, files: dict | None = None, timeout: float = 15):
         if files:

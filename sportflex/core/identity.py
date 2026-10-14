@@ -1,7 +1,7 @@
 """Which running copy of sport-flex a Telegram login belongs to.
 
-A local ``python -m sportflex ui`` and the Docker server share one bot chat, and
-each can ask for a captcha at the same time. The label is how you tell them apart.
+Captcha photos are stamped with this label. Only one process may poll a bot
+token; a second copy is refused so the same account cannot book twice.
 """
 
 from __future__ import annotations
@@ -14,8 +14,8 @@ from sportflex.core.accounts import load_env
 def server_label() -> str:
     """SPORT_FLEX_INSTANCE if set (for example ``docker`` or ``筆電``), otherwise the hostname.
 
-    ``serve()`` also fills the env with ``hostname:port`` when nothing else is set,
-    so two local UIs on different ports stay distinct.
+    ``serve()`` fills the env with ``hostname:port`` when nothing else is set,
+    so a notice still says which machine it came from.
     """
     name = load_env().get("SPORT_FLEX_INSTANCE", "").strip()
     return name or socket.gethostname()
