@@ -751,9 +751,10 @@
       });
       $("addTarget").classList.toggle("hidden", rows.length >= maxTargets());
       const rules = state.venue.rules;
-      $("targetHint").textContent = rules.distinct_courts && rows.length > 1
+      const share = "和其他帳號同時搶時，會自動錯開到不同場或不同時段。";
+      $("targetHint").textContent = (rules.distinct_courts && rows.length > 1
         ? "選「任一場」時會自動避開其他目標用到的場地。"
-        : "「任一場」會在開放瞬間用時段篩選找出所有空場，搶第一個有空的。";
+        : "「任一場」會在開放瞬間用時段篩選找出所有空場，搶第一個有空的。") + share;
     }
 
     // ---- weekly routine -----------------------------------------------
@@ -920,7 +921,9 @@
             ? el("span", { class: "badge ok", text: `已送出${item.bookedName ? " · " + item.bookedName : ""}` })
             : item.status === "skipped" ? el("span", { class: "badge skip", text: "略過" })
             : el("span", { class: "badge", text: running ? "等待中" : "未搶到" });
-          return el("div", { class: "tstatus" }, [el("span", { text: `${item.name} · ${item.time}` }), badge]);
+          const origin = item.fromTime && (item.fromTime !== item.time || (item.fromName && item.fromName !== item.name))
+            ? `（原 ${item.fromName || item.name} ${item.fromTime}）` : "";
+          return el("div", { class: "tstatus" }, [el("span", { text: `${item.name} · ${item.time}${origin}` }), badge]);
         }));
       }
       if (data.phase === "need_login") $("loginBox").classList.remove("hidden");
@@ -955,9 +958,12 @@
       try {
         const data = await api("/api/snipes");
         const others = data.snipes.filter((job) => job.running && !(job.venue === state.venue.id && job.account === state.account));
-        $("jobs").textContent = others.length
-          ? "其他進行中的搶訂：" + others.map((job) => `${job.venue}/${job.account} ${job.release.targetLabel}`).join("、")
-          : "";
+        const who = (id) => state.meta?.accounts.find((item) => item.id === id)?.label || id;
+        const line = (job) => {
+          const targets = (job.targets || []).map((item) => `${item.name} ${item.time}`).join("、");
+          return `${who(job.account)} ${job.release.targetLabel} ${targets}`.trim();
+        };
+        $("jobs").textContent = others.length ? "其他進行中的搶訂：" + others.map(line).join("、") : "";
       } catch { /* optional */ }
     }
 

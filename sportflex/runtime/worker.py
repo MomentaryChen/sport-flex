@@ -9,6 +9,7 @@ import time
 from sportflex.core.accounts import Account
 from datetime import date, datetime, timedelta
 
+from sportflex.core.coord import Coordinator
 from sportflex.core.engine import (
     SnipeJob,
     WatchJob,
@@ -82,11 +83,13 @@ class AccountWorker:
         notifier: Notifier,
         events: EventStore | None = None,
         bot: TelegramBot | None = None,
+        coord: Coordinator | None = None,
     ) -> None:
         self.account = account
         self.notifier = notifier
         self.events = events or NullEventStore()
         self.bot = bot
+        self.coord = coord
         self.venues = {vid: venue for vid, venue in venues.items() if venue.provider == account.provider}
         self.snipes = {
             vid: SnipeJob(
@@ -97,6 +100,7 @@ class AccountWorker:
                 self.events,
                 on_logout=self._logged_out,
                 on_watch=lambda spec, venue=venue: self._adopt_watch(venue, spec),
+                coord=coord,
             )
             for vid, venue in self.venues.items()
         }
@@ -765,13 +769,29 @@ class AccountWorker:
 
     def set_snipe(self, venue: Venue, category: str | None, targets: list | None) -> dict:
         job = self.snipes[venue.id]
+        category = category or venue.categories[0]
         if targets is None:
             def run(_provider: Provider) -> dict:
                 self._remember_routine_skip(venue, job)
                 return job.cancel()
 
             return self.call(run)
-        return self.call(lambda _provider: job.arm(category or venue.categories[0], targets))
+
+        def run(provider: Provider) -> dict:
+            courts: list[tuple[str, str]] = []
+            # Court names are only needed when another account is already waiting on this wave.
+            release = next_release(venue.rules)
+            waiting = self.coord is not None and self.coord.has_peers(
+                venue.id, category, release["targetDate"], self.account.id
+            )
+            if waiting:
+                try:
+                    courts = [(court.id, court.name) for court in provider.list_courts(venue, category)]
+                except Exception:
+                    courts = []
+            return job.arm(category, targets, courts)
+
+        return self.call(run)
 
     def set_routine(self, venue: Venue, routine: dict | None) -> dict:
         """Save a weekly pattern and arm the upcoming release when it matches.

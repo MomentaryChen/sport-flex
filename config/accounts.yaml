@@ -1,5 +1,6 @@
 # 帳號清單。密碼不寫在這裡：username_env / password_env 指向 .env 裡的 key。
 # 同平台可以放多個帳號（例如家人），每個帳號有自己的瀏覽器 profile 和 worker，可同時搶。
+# 同時搶同一波時，後設定的帳號會自動改到不同場，或附近的時段，避免兩個人搶同一格。
 #
 #   - id: family
 #     provider: changjia
