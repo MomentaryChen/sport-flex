@@ -174,7 +174,7 @@ class AccountWorker:
                 self.ready.set()
                 while not self._stop.is_set():
                     try:
-                        job = self._queue.get(timeout=1)
+                        job = self._queue.get(timeout=self._idle_timeout())
                     except queue.Empty:
                         self._tick(provider)
                         continue
@@ -183,6 +183,26 @@ class AccountWorker:
         except Exception as exc:
             self.startup_error = str(exc)
             self.ready.set()
+
+    def _idle_timeout(self) -> float:
+        """Wake in time for the first query and the next poll.
+
+        The idle loop used to sleep a full second, so the first request could land up to a
+        second late. If that request was also early, the site still looked closed and the
+        next try waited another poll_sec.
+        """
+        wait = 1.0
+        for job in self.snipes.values():
+            if not job.active:
+                continue
+            remaining = job.next_action_in(datetime.now(job.rules.tz))
+            if remaining is None:
+                continue
+            if remaining <= 0:
+                return 0.05
+            if remaining < 5:
+                wait = min(wait, max(0.05, remaining))
+        return wait
 
     def _snipe_near_release(self) -> bool:
         """Within prepare_lead of opens_at — snipe must keep ticking even during captcha hold."""

@@ -297,6 +297,18 @@
     .ev.warn .ev-msg { color: var(--warn); }
     .ev.error .ev-msg { color: var(--danger); }
     .ev-kind { font-family: var(--mono); font-size: 10.5px; color: var(--ink-3); margin-left: 6px; }
+    .stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+    .stat { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: var(--surface-2); }
+    .stat-label { font-size: 12px; color: var(--ink-3); }
+    .stat-value { font-family: var(--mono); font-weight: 700; font-size: 20px; line-height: 1.2; margin-top: 2px; }
+    .stat-sub { font-size: 12px; color: var(--ink-2); margin-top: 2px; }
+    .stat-note { font-size: 12.5px; color: var(--ink-2); margin: 8px 0 0; }
+    .stats-empty { font-size: 13px; color: var(--ink-3); margin: 0; }
+    .court-list { margin-top: 10px; border: 1px solid var(--line); border-radius: 12px; padding: 4px 12px; background: var(--surface); }
+    .court-row { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 10px; align-items: center; font-size: 13px; padding: 8px 0; border-top: 1px dashed var(--line); }
+    .court-row:first-child { border-top: 0; }
+    .court-row .mono { font-size: 12px; color: var(--ink-2); }
+    @media (max-width: 640px) { .stats { grid-template-columns: 1fr; } }
   </style>
 </head>
 <body>
@@ -438,7 +450,9 @@
         <button class="btn btn-ghost" id="closeHistory" type="button">關閉</button>
       </div>
       <div class="muted" id="historyScope" style="font-size:12px"></div>
-      <div class="history-section">開搶結果（近 30 天，秒數為開搶後幾秒）</div>
+      <div class="history-section">開搶統計（近 30 天）</div>
+      <div id="stats"></div>
+      <div class="history-section">每一波（秒數為開搶後幾秒）</div>
       <div id="runs"></div>
       <div class="history-section">
         <span>事件（近 7 天）</span>
@@ -1229,20 +1243,109 @@
       $("historyModal").classList.remove("hidden");
       const account = state.meta.accounts.find((item) => item.id === state.account);
       $("historyScope").textContent = `${state.venue.name} · ${account ? account.label : state.account}`;
+      $("stats").replaceChildren(el("div", { class: "skeleton" }));
       $("runs").replaceChildren(el("div", { class: "skeleton" }));
       $("eventList").replaceChildren(el("div", { class: "skeleton" }));
       try {
-        const [runs, history] = await Promise.all([
+        const [runs, history, stats] = await Promise.all([
           api("/api/snipe-runs" + query({ days: 30 })),
           api("/api/history" + query({ days: 7, limit: 300 })),
+          api("/api/snipe-stats" + query({ days: 30 })),
         ]);
         state.history = history.events;
+        renderStats(stats.stats);
         renderRuns(runs.runs);
         renderEvents();
       } catch (error) {
+        $("stats").replaceChildren(el("p", { class: "stats-empty", text: error.message }));
         $("runs").replaceChildren(el("div", { class: "empty", text: error.message }));
         $("eventList").replaceChildren();
       }
+    }
+
+    const pct = (rate) => rate === null || rate === undefined ? "—" : `${Math.round(rate * 100)}%`;
+    const secText = (value) => value === null || value === undefined ? "" : `${Number(value).toFixed(2)}s`;
+
+    function renderStats(stats) {
+      if (!stats || !stats.waves.total) {
+        $("stats").replaceChildren(el("p", {
+          class: "stats-empty",
+          text: "還沒有開搶紀錄。第一波之後這裡會列出命中率、平均幾秒釋出，以及哪一面場最好搶。",
+        }));
+        return;
+      }
+      const release = stats.release;
+      const cards = [
+        ["目標命中率", pct(stats.targets.hitRate), targetSub(stats.targets)],
+        ["至少搶到一張", pct(stats.waves.hitRate), waveSub(stats.waves)],
+        ["平均幾秒釋出", release.avgSec == null ? "—" : secText(release.avgSec), releaseSub(release)],
+      ];
+      const grid = el("div", { class: "stats" }, cards.map(([label, value, sub]) => el("div", { class: "stat" }, [
+        el("div", { class: "stat-label", text: label }),
+        el("div", { class: "stat-value", text: value }),
+        el("div", { class: "stat-sub", text: sub }),
+      ])));
+      const children = [grid, el("p", { class: "stat-note", text: offsetNote(stats) })];
+      const courts = renderCourtStats(stats);
+      if (courts) children.push(courts);
+      $("stats").replaceChildren(...children);
+    }
+
+    function targetSub(targets) {
+      if (!targets.tried) return "還沒有指定場地的目標";
+      const skipped = targets.skipped ? `，${targets.skipped} 個因規定略過` : "";
+      return `${targets.booked}/${targets.tried} 個時段${skipped}`;
+    }
+
+    function waveSub(waves) {
+      if (!waves.fired) return `${waves.total} 波都在開搶前結束`;
+      return `有開始查的 ${waves.fired} 波裡 ${waves.landed} 波有搶到，${waves.full} 波全搶到`;
+    }
+
+    function releaseSub(release) {
+      if (!release.count) return "還沒看到網站釋出";
+      return `中位數 ${secText(release.medianSec)} · 最快 ${secText(release.minSec)} · 最慢 ${secText(release.maxSec)} · ${release.count} 波`;
+    }
+
+    function offsetNote(stats) {
+      const offset = stats.offsetSec;
+      const have = stats.release.count;
+      const need = stats.offsetMinSamples || 3;
+      if (offset == null) {
+        const seen = stats.offsetSamples || have;
+        return seen
+          ? `只看到 ${seen} 波釋出，還不到 ${need} 波，第一次查詢仍在開搶當下送出。`
+          : "還沒有看過網站釋出的時間，第一次查詢會在開搶當下送出。";
+      }
+      const scope = stats.offsetScope === "venue" ? `這個帳號樣本不夠，改用整館 ${stats.offsetSamples} 波。` : "";
+      if (Math.abs(offset) < 0.05) return `${scope}釋出時間的中位數接近開搶當下，第一次查詢維持在開搶當下送出。`.trim();
+      const when = offset > 0 ? `開搶後 ${offset.toFixed(2)} 秒` : `開搶前 ${Math.abs(offset).toFixed(2)} 秒`;
+      return `${scope}第一次查詢會在${when}送出，對齊中位數釋出時間。查太早會被當成還沒開放，然後多等一輪。`.trim();
+    }
+
+    function renderCourtStats(stats) {
+      const ranked = (stats.courts || []).filter((court) => court.tried);
+      const any = stats.anyCourts || [];
+      if (!ranked.length && !any.length) return null;
+      const best = ranked.length >= 2 ? ranked[0].courtId : "";
+      const rows = ranked.map((court) => {
+        const speed = court.avgSeenSec == null ? "" : ` · 看到 ${secText(court.avgSeenSec)}`;
+        return el("div", { class: "court-row" }, [
+          el("span", {}, [
+            court.name,
+            court.courtId === best ? el("span", { class: "badge ok", text: "最好搶", style: "margin-left:8px" }) : null,
+          ]),
+          el("span", { class: "mono", text: `${court.booked}/${court.tried}（${pct(court.hitRate)}）${speed}` }),
+        ]);
+      });
+      if (any.length) {
+        const text = any.map((court) => `${court.name} ×${court.booked}`).join("、");
+        rows.push(el("div", { class: "court-row" }, [
+          el("span", { text: "任一場搶到" }),
+          el("span", { class: "mono", text: `${text}（不計入上面的命中率）` }),
+        ]));
+      }
+      return el("div", { class: "court-list" }, rows);
     }
 
     function renderRuns(runs) {

@@ -6,6 +6,7 @@ import sys
 from sportflex.core.accounts import load_accounts, pick_account
 from sportflex.core.engine import grab
 from sportflex.core.events import EventStore
+from sportflex.core.snipe_stats import stats_lines
 from sportflex.core.models import iter_dates, slot_bounds, slot_matches
 from sportflex.core.rules import quota_reason
 from sportflex.core.venue import get_venue, load_venues
@@ -189,7 +190,11 @@ def _history(args) -> int:
     store = EventStore()
     scope = {"account": args.account or "", "venue": args.venue or "", "days": args.days}
     runs = store.snipe_runs(**scope, limit=args.limit)
-    print(f"開搶結果（最近 {args.days:g} 天，秒數 = 開搶後幾秒）")
+    stats = store.snipe_stats(**scope)
+    print(f"開搶統計（最近 {args.days:g} 天）")
+    for line in stats_lines(stats) or ["  （沒有紀錄）"]:
+        print(f"  {line}")
+    print("\n開搶結果（秒數 = 開搶後幾秒）")
     if not runs:
         print("  （沒有紀錄）")
     for run in runs:

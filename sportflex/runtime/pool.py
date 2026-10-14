@@ -207,7 +207,8 @@ class WorkerPool:
         if account_id and account_id not in self.workers:
             raise ValueError("找不到帳號 " + account_id)
         runs = self.events.snipe_runs(account=account_id or "", days=14, limit=8)
-        return format_runs(runs)
+        stats = self.events.snipe_stats(account=account_id or "", days=14)
+        return format_runs(runs, stats)
 
     def preview_book(
         self,
