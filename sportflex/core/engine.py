@@ -6,6 +6,7 @@ from dataclasses import asdict
 from datetime import datetime, timedelta
 from typing import Callable
 
+from sportflex.core.calendar import booking_calendar, calendar_lines
 from sportflex.core.events import EventStore, NullEventStore
 from sportflex.core.models import Court, Slot, slot_bounds, slot_matches
 from sportflex.core.notify import Notifier
@@ -135,7 +136,7 @@ def court_public(court: Court) -> dict:
 def grab(provider: Provider, venue: Venue, court: Court, query_date: str, slot: Slot) -> dict:
     """Submit one booking and stop before payment."""
     snapshot = provider.submit(court, query_date, slot)
-    return {
+    result = {
         "ok": True,
         "venue": venue.id,
         "venueName": venue.display_name,
@@ -145,6 +146,10 @@ def grab(provider: Provider, venue: Venue, court: Court, query_date: str, slot: 
         "price": slot.price,
         **public_snapshot(snapshot),
     }
+    calendar = booking_calendar(venue, result)
+    if calendar:
+        result["calendar"] = calendar
+    return result
 
 
 def public_snapshot(snapshot: dict) -> dict:
@@ -175,6 +180,7 @@ def announce_grab(notifier: Notifier, account_label: str, result: dict) -> None:
         lines.append(f"請立即到長佳網站「會員中心 → 待付款」付款{deadline}。")
     if order.get("carrier"):
         lines.append(f"發票請選「手機載具」，填 {order['carrier']}")
+    lines.extend(calendar_lines(result))
     if order.get("warning"):
         lines.append(f"注意：{order['warning']}")
     notifier.send(f"✅ 搶到 {result['venueName']} {result['court']}", head + "\n".join(lines))

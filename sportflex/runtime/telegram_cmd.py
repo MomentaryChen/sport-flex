@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from datetime import date, timedelta
 
+from sportflex.core.calendar import calendar_lines
 from sportflex.core.models import Slot, slot_matches
 from sportflex.core.rules import next_release
 from sportflex.core.venue import Venue
@@ -372,6 +373,7 @@ def format_grab(result: dict) -> str:
         lines.append(order.get("paymentUrl") or "請到會員中心 → 待付款")
         if order.get("carrier"):
             lines.append(f"發票請選手機載具 {order['carrier']}")
+        lines.extend(calendar_lines(result))
         if order.get("warning"):
             lines.append(f"注意：{order['warning']}")
     else:
