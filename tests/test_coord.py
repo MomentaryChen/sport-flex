@@ -1,4 +1,4 @@
-from sportflex.core.coord import Coordinator, spread_targets
+from sportflex.core.coord import Coordinator, nearest_times, spread_targets
 from sportflex.core.rules import BookingRules
 from sportflex.runtime.telegram_cmd import format_snipe
 
@@ -62,6 +62,32 @@ def test_claim_is_exclusive_until_released():
     board.release_claim("v", "羽球", "2026-10-28", "me", "A", "19:00")
     assert board.try_claim("v", "羽球", "2026-10-28", "family", "A", "19:00")
     assert board.blocked_courts("v", "羽球", "2026-10-28", "19:00", "me") == {"A", "B"}
+
+
+def test_nearest_times_follow_venue_hours():
+    short = BookingRules(open_time="09:00", close_time="21:00")
+    # 21:00 would end at 22:00, after this venue closes; 08:00 is before it opens.
+    assert nearest_times(short, "19:00") == ["20:00", "18:00", "17:00", "16:00", "15:00"]
+    assert nearest_times(short, "09:00")[0] == "10:00"
+    assert "08:00" not in nearest_times(short, "09:00")
+    # A two-hour slot at the default 22:00 close cannot start at 21:00.
+    assert nearest_times(BookingRules(slot_hours=2), "19:00")[:2] == ["20:00", "18:00"]
+    half = BookingRules(open_time="07:30", close_time="12:00", align_minutes=30)
+    assert nearest_times(half, "08:00")[:2] == ["08:30", "07:30"]
+    assert nearest_times(half, "11:00")[0] == "10:30"
+
+
+def test_only_court_stays_inside_venue_hours():
+    rules = BookingRules(open_time="09:00", close_time="21:00")
+    placed, notes = spread_targets(
+        rules, [target("A", "20:00", "場A")], [("me", [target("A", "20:00", "場A")])], [("A", "場A")]
+    )
+    assert placed[0]["courtId"] == "A" and placed[0]["time"] == "19:00"
+    assert "19:00" in notes[0]
+    early, _notes = spread_targets(
+        rules, [target("A", "09:00", "場A")], [("me", [target("A", "09:00", "場A")])], [("A", "場A")]
+    )
+    assert early[0]["time"] == "10:00"
 
 
 def test_snipe_text_shows_the_original_target():

@@ -187,6 +187,11 @@
     .remove:hover { background: var(--danger-soft); color: var(--danger); }
     .add-target { margin-top: 8px; width: 100%; border-style: dashed; color: var(--ink-2); }
     .hint { font-size: 12px; color: var(--ink-3); margin: 8px 0 0; }
+    .watch-option {
+      display: flex; align-items: flex-start; gap: 8px;
+      margin: 10px 0 0; font-size: 13px; color: var(--ink-2); cursor: pointer;
+    }
+    .watch-option input { accent-color: var(--accent); width: 16px; height: 16px; margin-top: 2px; flex: 0 0 auto; }
     .weekdays { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
     #routineTargets { margin-top: 8px; }
     .wd-btn {
@@ -195,6 +200,26 @@
     }
     .wd-btn.on { background: var(--accent); border-color: var(--accent); color: #fff; }
     .routine-actions { display: grid; gap: 8px; margin-top: 10px; }
+    .fill-box { margin-top: 12px; padding: 12px; border-radius: 12px; background: var(--surface-2); border: 1px solid var(--line); }
+    .fill-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+    .fill-title { font-size: 13px; font-weight: 700; color: var(--ink-2); }
+    .fill-range { font-size: 12px; color: var(--ink-3); white-space: nowrap; }
+    .fill-days { display: grid; grid-template-columns: repeat(auto-fill, minmax(64px, 1fr)); gap: 6px; margin-top: 10px; }
+    .fill-day {
+      display: grid; justify-items: center; gap: 1px; padding: 7px 4px; border-radius: 10px;
+      border: 1px solid var(--line); background: var(--surface); color: var(--ink-2); cursor: pointer;
+    }
+    .fill-day b { font-size: 15px; line-height: 1.2; }
+    .fill-day span { font-size: 11px; color: var(--ink-3); }
+    .fill-day.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-ink); }
+    .fill-day.on span { color: var(--accent-ink); }
+    .fill-day.on b::before { content: "✓ "; font-size: 12px; }
+    .fill-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; }
+    .fill-foot .hint { margin: 0; }
+    .fill-links { display: flex; gap: 4px; flex: 0 0 auto; }
+    .link-btn { border: 0; background: transparent; color: var(--accent-ink); font-size: 12px; padding: 2px 6px; border-radius: 6px; cursor: pointer; }
+    .link-btn:hover { background: var(--accent-soft); }
+    .fill-empty { font-size: 12px; color: var(--ink-3); margin: 10px 0 0; }
 
     .stepper { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; margin: 4px 0 12px; }
     .step { text-align: center; font-size: 11px; color: var(--ink-3); }
@@ -379,6 +404,21 @@
             <div class="weekdays" id="weekdays" role="group" aria-label="星期"></div>
             <div class="targets" id="routineTargets"></div>
             <button class="btn add-target" id="addRoutineTarget" type="button">＋ 再加一個時段</button>
+            <div class="fill-box hidden" id="fillBox">
+              <div class="fill-head">
+                <span class="fill-title">已開放的日子也盯</span>
+                <span class="fill-range" id="fillRange"></span>
+              </div>
+              <div class="fill-days" id="fillDays" role="group" aria-label="已開放的日子"></div>
+              <p class="fill-empty hidden" id="fillEmpty">先選星期，這裡會列出範圍內可盯的日子。</p>
+              <div class="fill-foot" id="fillFoot">
+                <p class="hint">點選要盯的日期，有人退訂就送出訂單</p>
+                <div class="fill-links">
+                  <button class="link-btn" id="fillAll" type="button">全選</button>
+                  <button class="link-btn" id="fillNone" type="button">清除</button>
+                </div>
+              </div>
+            </div>
             <p class="hint" id="routineStatus">選星期和時段後套用。之後每天開放前會自動排上第 14 天。</p>
             <div class="routine-actions">
               <button class="btn btn-primary btn-block" id="routineBtn" type="button">套用每週搶訂</button>
@@ -413,8 +453,12 @@
           <div class="divider"></div>
           <div id="watchBox">
             <div class="release-label">盯已開放的時段</div>
-            <p class="hint" id="watchHint">用右側目前的日期和上午／下午／晚上。看到空檔就送出訂單。</p>
-            <button class="btn btn-block" id="watchStart" type="button">開始盯場</button>
+            <p class="hint" id="watchHint">用右側目前的日期和上午／下午／晚上。看到空檔就送出一筆訂單，然後停止。</p>
+            <label class="watch-option" id="watchUntilFullLabel">
+              <input type="checkbox" id="watchUntilFull" />
+              <span id="watchUntilFullText">訂到當天上限才停</span>
+            </label>
+            <button class="btn btn-block" id="watchStart" type="button" style="margin-top:10px">開始盯場</button>
             <div id="watchRun" class="hidden">
               <div class="tstatus"><span id="watchStatus"></span><span class="badge">盯場中</span></div>
               <div class="log-lines" id="watchLog"></div>
@@ -602,8 +646,8 @@
       renderSports();
       state.courts = [];
       renderWeekdays([]);
-      renderRoutineTargets([{ courtId: ANY, time: "20:00" }]);
-      renderTargets([{ courtId: ANY, time: "19:00" }]);
+      renderRoutineTargets([{ courtId: ANY, time: preferredTime("20:00") }]);
+      renderTargets([{ courtId: ANY, time: preferredTime("19:00") }]);
       await refreshAll();
     }
 
@@ -652,6 +696,8 @@
       ];
       if (rules.distinct_courts) chips.push("須不同場");
       $("ruleChips").replaceChildren(...chips.map((text) => el("span", { class: "rule-chip", text })));
+      $("watchUntilFullText").textContent = `訂到當天上限（${rules.max_hours_per_day} 小時）才停`;
+      refreshWatchHint();
     }
 
     async function loadRelease() {
@@ -701,14 +747,33 @@
       return Math.max(1, Math.floor(rules.max_hours_per_day / rules.slot_hours));
     }
 
-    function timeOptions() {
+    function bookingBounds() {
       const rules = state.venue.rules;
-      const length = rules.slot_hours * 60;
+      const length = Math.round(rules.slot_hours * 60);
+      const open = toMinutes(rules.open_time);
+      const close = toMinutes(rules.close_time);
+      const step = rules.align_minutes;
+      const remainder = open % step;
+      const first = remainder ? open + (step - remainder) : open;
+      return { first, close, length, step, last: close - length };
+    }
+
+    function timeOptions() {
+      const { first, close, length, step } = bookingBounds();
       const options = [];
-      for (let start = 6 * 60; start + length <= 22 * 60; start += rules.align_minutes) {
+      for (let start = first; start + length <= close; start += step) {
         options.push({ value: fmt(start), label: `${fmt(start)}–${fmt(start + length)}` });
       }
       return options;
+    }
+
+    function preferredTime(want) {
+      const bounds = bookingBounds();
+      const minute = toMinutes(want);
+      if (minute >= bounds.first && minute <= bounds.last && minute % bounds.step === 0) return want;
+      const clamped = Math.min(Math.max(minute, bounds.first), bounds.last);
+      const aligned = clamped - (clamped % bounds.step);
+      return fmt(aligned >= bounds.first ? aligned : bounds.first);
     }
 
     function readTargetRows(box) {
@@ -771,16 +836,74 @@
         });
         button.dataset.day = String(index);
         button.onclick = () => {
-          const on = !button.classList.contains("on");
-          button.classList.toggle("on", on);
-          button.setAttribute("aria-pressed", on ? "true" : "false");
+          toggleChip(button);
+          renderFillDays();
         };
         return button;
       }));
     }
 
+    function toggleChip(button) {
+      const on = !button.classList.contains("on");
+      button.classList.toggle("on", on);
+      button.setAttribute("aria-pressed", on ? "true" : "false");
+    }
+
     function readWeekdays() {
       return [...$("weekdays").querySelectorAll("button.on")].map((button) => Number(button.dataset.day));
+    }
+
+    function isoWeekday(iso) {
+      const [year, month, day] = iso.split("-").map(Number);
+      return (new Date(Date.UTC(year, month - 1, day)).getUTCDay() + 6) % 7;  // Monday = 0, like DAYS
+    }
+
+    function shortDay(iso) {
+      const [, month, day] = iso.split("-").map(Number);
+      return `${month}/${day}（${DAYS[isoWeekday(iso)]}）`;
+    }
+
+    // Open days on the picked weekdays. Picks survive a weekday change while the day is still offered.
+    function renderFillDays(picked) {
+      const keep = new Set(picked || readFillDays());
+      const weekdays = new Set(readWeekdays());
+      const skip = (state.routine && state.routine.skipDate) || "";
+      const open = (state.routine && state.routine.openDays) || [];
+      const days = open.filter((day) => weekdays.has(isoWeekday(day)) && day !== skip);
+      $("fillDays").replaceChildren(...days.map((day) => {
+        const on = keep.has(day);
+        const [, month, date] = day.split("-").map(Number);
+        const button = el("button", {
+          type: "button",
+          class: "fill-day" + (on ? " on" : ""),
+          "aria-pressed": on ? "true" : "false",
+          "aria-label": shortDay(day),
+        });
+        button.append(el("b", { text: `${month}/${date}` }), el("span", { text: "週" + DAYS[isoWeekday(day)] }));
+        button.dataset.date = day;
+        button.onclick = () => toggleChip(button);
+        return button;
+      }));
+      $("fillRange").textContent = open.length ? `範圍 ${monthDay(open[0])} – ${monthDay(open[open.length - 1])}` : "";
+      $("fillBox").classList.toggle("hidden", !open.length);
+      $("fillDays").classList.toggle("hidden", !days.length);
+      $("fillFoot").classList.toggle("hidden", !days.length);
+      $("fillEmpty").classList.toggle("hidden", !!days.length);
+    }
+
+    function monthDay(iso) {
+      const [, month, day] = iso.split("-").map(Number);
+      return `${month}/${day}`;
+    }
+
+    function setFillDays(on) {
+      $("fillDays").querySelectorAll("button").forEach((button) => {
+        if (button.classList.contains("on") !== on) toggleChip(button);
+      });
+    }
+
+    function readFillDays() {
+      return [...$("fillDays").querySelectorAll("button.on")].map((button) => button.dataset.date);
     }
 
     function renderRoutineTargets(rows) {
@@ -803,7 +926,13 @@
       } else {
         next = `下一波 ${release.targetLabel || ""} 不是選定的星期，到了會再排。`;
       }
-      return `已套用：${data.label}。${next}`;
+      return `已套用：${data.label}。${next}${fillDatesText(data)}`;
+    }
+
+    function fillDatesText(data) {
+      if (!(data.fillDates || []).length) return "";
+      const dates = ((data.fill && data.fill.dates) || []).map((item) => shortDay(item.date));
+      return dates.length ? ` 也在盯已開放的 ${dates.join("、")}。` : " 選的已開放日子都已訂到，或正由搶訂／盯場處理。";
     }
 
     function showRoutine(data, fill) {
@@ -811,9 +940,13 @@
       state.routine = data;
       $("routineStatus").textContent = routineStatusText(data);
       $("routineOff").classList.toggle("hidden", !data.enabled);
-      if (!fill) return;
+      if (!fill) {
+        renderFillDays();  // a new day may have opened; keep what is picked on screen
+        return;
+      }
       renderWeekdays(data.weekdays || []);
-      renderRoutineTargets((data.targets && data.targets.length) ? data.targets : [{ courtId: ANY, time: "20:00" }]);
+      renderFillDays(data.fillDates || []);
+      renderRoutineTargets((data.targets && data.targets.length) ? data.targets : [{ courtId: ANY, time: preferredTime("20:00") }]);
     }
 
     async function loadRoutine() {
@@ -842,10 +975,12 @@
       const days = weekdays.map((day) => "週" + DAYS[day]).join("、");
       const lines = named.map((row) => `・${row.name} ${row.time}`).join("\n");
       const who = $("accountSelect").selectedOptions[0]?.textContent || state.account;
-      if (!confirm(`用「${who}」設定每週固定\n${state.venue.name} ${state.category}\n${days}\n${lines}\n\n之後凡是這些星期，都會在當天 ${state.venue.rules.release_time} 開放前自動排上第 ${state.venue.rules.window_days} 天。付款仍要自己完成。`)) return;
+      const fillDates = readFillDays();
+      const extra = fillDates.length ? `已開放的 ${fillDates.map(shortDay).join("、")} 也會盯，有人退訂就送出訂單。` : "";
+      if (!confirm(`用「${who}」設定每週固定\n${state.venue.name} ${state.category}\n${days}\n${lines}\n\n之後凡是這些星期，都會在當天 ${state.venue.rules.release_time} 開放前自動排上第 ${state.venue.rules.window_days} 天。${extra}付款仍要自己完成。`)) return;
       try {
         showRoutine(await api("/api/routine", json(target({
-          enabled: true, category: state.category, weekdays, targets: named,
+          enabled: true, category: state.category, weekdays, targets: named, fillDates,
         }))), true);
         toast("已套用每週固定。符合的日子會在開放前自動排好");
         loadJobs();
@@ -1256,7 +1391,7 @@
         const rows = readTargets();
         const routineRows = $("routineTargets").querySelector(".target") ? readTargetRows($("routineTargets")) : null;
         state.courts = data.courts;
-        renderTargets(rows.length ? rows : [{ courtId: ANY, time: "19:00" }]);
+        renderTargets(rows.length ? rows : [{ courtId: ANY, time: preferredTime("19:00") }]);
         if (routineRows) renderRoutineTargets(routineRows);
       } catch (error) {
         toast(error.message, "error");
@@ -1280,17 +1415,45 @@
       return courts.reduce((sum, court) => sum + (court.slots || []).filter((slot) => slot.mine).reduce((inner, slot) => inner + slotHours(slot.time), 0), 0);
     }
 
+    function watchUntilFull() {
+      return !!$("watchUntilFull").checked;
+    }
+
+    function refreshWatchHint(spec) {
+      if (!state.venue) return;
+      const rules = state.venue.rules;
+      const held = heldHours();
+      const filling = spec ? !!spec.untilFull && !(spec.targets || []).length : watchUntilFull();
+      const where = "用右側目前的日期和上午／下午／晚上。";
+      const heldNote = held ? `這天你已訂 ${held} 小時（上限 ${rules.max_hours_per_day}）。` : "";
+      const mode = filling
+        ? `看到空檔就連續送出，直到這天訂滿 ${rules.max_hours_per_day} 小時才停。`
+        : "看到空檔就送出一筆訂單，然後停止。";
+      $("watchHint").textContent = [where, heldNote, mode].filter(Boolean).join("");
+    }
+
     async function startWatch() {
       if (!state.date) {
         toast("先選右側的日期", "error");
         return;
       }
+      const rules = state.venue.rules;
+      const held = heldHours();
+      const filling = watchUntilFull();
+      if (filling && held + rules.slot_hours > rules.max_hours_per_day) {
+        toast(`這天已訂 ${held} 小時，上限 ${rules.max_hours_per_day} 小時`, "error");
+        return;
+      }
       const windowText = state.from ? `${state.from}–${state.to}` : "全天";
       const who = $("accountSelect").selectedOptions[0]?.textContent || state.account;
-      if (!confirm(`用「${who}」盯 ${state.venue.name}\n${state.date} ${state.category} ${windowText}\n\n看到空檔就送出訂單，付款要自己完成。開搶前後會暫停查表，結束後繼續。`)) return;
+      const mode = filling
+        ? `看到空檔就送出訂單，直到這天訂滿 ${rules.max_hours_per_day} 小時才停。`
+        : "看到空檔就送出一筆訂單，然後停止。";
+      if (!confirm(`用「${who}」盯 ${state.venue.name}\n${state.date} ${state.category} ${windowText}\n\n${mode}付款要自己完成。開搶前後會暫停查表，結束後繼續。`)) return;
       try {
         showWatch(await api("/api/watch", json(target({
           enabled: true, category: state.category, date: state.date, timeFrom: state.from, timeTo: state.to, courtId: "",
+          untilFull: filling,
         }))));
         toast(state.locked ? "已設定盯場，開搶前後會暫停，結束後繼續" : "已開始盯場");
       } catch (error) {
@@ -1314,7 +1477,8 @@
       }
       const windowText = spec.timeFrom ? `${spec.timeFrom}–${spec.timeTo}` : "全天";
       const court = spec.courtName || (spec.courtId ? "指定場" : "任一場");
-      return [spec.date, windowText, court].filter(Boolean).join(" ");
+      const mode = spec.untilFull ? "訂滿才停" : "";
+      return [spec.date, windowText, court, mode].filter(Boolean).join(" ");
     }
 
     function showWatch(data) {
@@ -1322,15 +1486,12 @@
       state.watch = data;
       const running = !!data.running;
       $("watchStart").classList.toggle("hidden", running);
+      $("watchUntilFullLabel").classList.toggle("hidden", running);
       $("watchRun").classList.toggle("hidden", !running);
       const spec = data.spec || {};
       $("watchStatus").textContent = watchSummary(spec);
       $("watchLog").textContent = (data.log || []).slice(-4).join("\n");
-      const held = heldHours();
-      const limit = state.venue ? state.venue.rules.max_hours_per_day : "";
-      $("watchHint").textContent = held
-        ? `用右側目前的日期和時段。這天你已訂 ${held} 小時（上限 ${limit}）。`
-        : "用右側目前的日期和上午／下午／晚上。看到空檔就送出訂單。";
+      refreshWatchHint(running ? spec : null);
     }
 
     async function grab(court, slot) {
@@ -1368,8 +1529,12 @@
           ].filter(Boolean).join("\n")
         : "停在訂單確認頁，還沒送出訂單；付款不會自動按。" + (result.url ? `\n${result.url}` : "");
       const refund = $("resultRefund");
-      if (calendar && calendar.refund) {
-        refund.textContent = "取消規則：" + calendar.refund;
+      const reminder = (result.refundReminder && result.refundReminder.line) || "";
+      const refundLines = [];
+      if (calendar && calendar.refund) refundLines.push("取消規則：" + calendar.refund);
+      if (reminder) refundLines.push(reminder);
+      if (refundLines.length) {
+        refund.textContent = refundLines.join("\n");
         refund.classList.remove("hidden");
       } else {
         refund.textContent = "";
@@ -1614,24 +1779,31 @@
     $("venueSelect").onchange = (event) => selectVenue(event.target.value);
     $("accountSelect").onchange = (event) => selectAccount(event.target.value);
     $("reload").onclick = () => loadBoard({ fresh: true });
+    function nextStart(lastTime, fallback) {
+      if (!lastTime) return preferredTime(fallback);
+      const { length, last } = bookingBounds();
+      return preferredTime(fmt(Math.min(toMinutes(lastTime) + length, last)));
+    }
+
     $("addTarget").onclick = () => {
       const rows = readTargets();
       const last = rows[rows.length - 1];
-      const next = last ? fmt(Math.min(toMinutes(last.time) + state.venue.rules.slot_hours * 60, 21 * 60)) : "19:00";
-      renderTargets([...rows, { courtId: ANY, time: next }]);
+      renderTargets([...rows, { courtId: ANY, time: nextStart(last && last.time, "19:00") }]);
     };
     $("addRoutineTarget").onclick = () => {
       const rows = readTargetRows($("routineTargets"));
       const last = rows[rows.length - 1];
-      const next = last ? fmt(Math.min(toMinutes(last.time) + state.venue.rules.slot_hours * 60, 21 * 60)) : "20:00";
-      renderRoutineTargets([...rows, { courtId: ANY, time: next }]);
+      renderRoutineTargets([...rows, { courtId: ANY, time: nextStart(last && last.time, "20:00") }]);
     };
+    $("fillAll").onclick = () => setFillDays(true);
+    $("fillNone").onclick = () => setFillDays(false);
     $("routineBtn").onclick = saveRoutine;
     $("routineOff").onclick = clearRoutine;
     $("snipeBtn").onclick = startSnipe;
     $("cancelBtn").onclick = cancelSnipe;
     $("watchStart").onclick = startWatch;
     $("watchStop").onclick = stopWatch;
+    $("watchUntilFull").onchange = () => refreshWatchHint();
     $("closeModal").onclick = () => $("modal").classList.add("hidden");
     $("modal").onclick = (event) => { if (event.target === $("modal")) $("modal").classList.add("hidden"); };
     $("loadCaptcha").onclick = async () => {

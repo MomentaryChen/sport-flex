@@ -3,7 +3,11 @@ from datetime import timedelta
 
 from sportflex.core.engine import SnipeJob
 from sportflex.core.identity import login_prefix
-from sportflex.runtime.telegram_bot import TelegramBot
+from sportflex.runtime.telegram_bot import (
+    OTHER_INSTANCE_STARTUP,
+    TelegramBot,
+    classify_poll_error,
+)
 from tests.test_engine import FakeProvider, no_disk, opens, venue  # noqa: F401  (fixtures)
 
 CHAT = "1391"
@@ -225,7 +229,7 @@ class Control:
         return "目前沒有盯場"
 
     def start_watch_text(self, account_id, venue_id, category, spec):
-        self.calls.append(("watch", category, spec["date"], spec["timeFrom"], spec["court"]))
+        self.calls.append(("watch", category, spec["date"], spec["timeFrom"], spec["court"], bool(spec.get("untilFull"))))
         return "盯場中"
 
     def stop_watch_text(self, account_id, venue_id):
@@ -281,7 +285,9 @@ def test_slots_snipe_and_release_commands():
     bot.handle(message("/watch"))
     assert ctrl.calls[-1] == ("watch-state", None)
     bot.handle(message("/watch 明天 晚上 A"))
-    assert ctrl.calls[-1] == ("watch", None, "2026-10-14", "18:00", "A")
+    assert ctrl.calls[-1] == ("watch", None, "2026-10-14", "18:00", "A", False)
+    bot.handle(message("/watch 明天 晚上 滿"))
+    assert ctrl.calls[-1] == ("watch", None, "2026-10-14", "18:00", "", True)
     bot.handle(message("/watch off"))
     assert ctrl.calls[-1] == ("unwatch", None)
     bot.handle(message("/board@SportBot 19:00"))
@@ -649,3 +655,89 @@ def test_relogin_prompt_waits_while_snipe_firing(monkeypatch, venue):  # noqa: F
     provider = SessionProvider(logged_in=False)
     worker._maybe_prompt_relogin(provider)
     assert not bot.photos and provider.captcha_calls == 0
+
+
+CONFLICT = RuntimeError(
+    'HTTP 409 b\'{"ok":false,"error_code":409,"description":"Conflict: terminated by other getUpdates request;'
+    ' make sure that only one bot instance is running"}\''
+)
+
+
+def test_classify_poll_conflict_is_another_instance_not_a_webhook():
+    assert classify_poll_error("getUpdates", CONFLICT) == "instance"
+    assert classify_poll_error("sendMessage", CONFLICT) == ""
+    webhook = RuntimeError("HTTP 409 Conflict: can't use getUpdates method while webhook is active")
+    assert classify_poll_error("getUpdates", webhook) == "webhook"
+    assert classify_poll_error("getUpdates", RuntimeError("timed out")) == ""
+
+
+def test_probe_does_not_confirm_updates_and_refuses_a_live_poller():
+    seen = []
+
+    def api(method, params, files=None):
+        seen.append(params)
+        raise CONFLICT
+
+    bot = TelegramBot("token", CHAT, api=api)
+    assert bot.probe_other_instance(attempts=2, pause=0) == OTHER_INSTANCE_STARTUP
+    assert seen == [{"timeout": 0}, {"timeout": 0}]
+
+
+def test_probe_starts_when_the_other_poller_is_gone():
+    calls = {"n": 0}
+
+    def api(method, params, files=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise CONFLICT
+        return []
+
+    bot = TelegramBot("token", CHAT, api=api)
+    assert bot.probe_other_instance(attempts=2, pause=0) == ""
+    assert calls["n"] == 2
+
+
+def test_probe_still_refuses_when_a_gap_success_is_followed_by_409():
+    calls = {"n": 0}
+
+    def api(method, params, files=None):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            return []
+        raise CONFLICT
+
+    bot = TelegramBot("token", CHAT, api=api)
+    assert bot.probe_other_instance(attempts=3, pause=0) == OTHER_INSTANCE_STARTUP
+
+
+def test_probe_does_not_block_startup_on_a_network_error(capsys):
+    def api(method, params, files=None):
+        raise RuntimeError("timed out")
+
+    bot = TelegramBot("token", CHAT, api=api)
+    assert bot.probe_other_instance(attempts=3, pause=0) == ""
+    assert "啟動檢查失敗" in capsys.readouterr().out
+
+
+def test_repeated_409_pauses_once_then_resumes(capsys):
+    state = {"n": 0}
+
+    def api(method, params, files=None):
+        if method != "getUpdates":
+            return {}
+        state["n"] += 1
+        if state["n"] <= 3:
+            raise CONFLICT
+        bot.stop()
+        return []
+
+    bot = TelegramBot("token", CHAT, api=api)
+    bot.conflict_pause_after = 3
+    bot.conflict_retry_sec = 0
+    paused = []
+    bot.on_booking_pause = paused.append
+    bot._poll()
+    assert paused == [True, False]
+    output = capsys.readouterr().out
+    assert output.count("409 Conflict") == 1
+    assert "getUpdates 失敗" not in output

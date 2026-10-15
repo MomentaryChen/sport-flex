@@ -5,12 +5,15 @@ import copy
 import queue
 import threading
 import time
+from typing import Callable
 
 from sportflex.core.accounts import Account
 from datetime import date, datetime, timedelta
 
 from sportflex.core.coord import Coordinator
 from sportflex.core.engine import (
+    ACTIVE_PHASES,
+    FillJob,
     SnipeJob,
     WatchJob,
     announce_grab,
@@ -22,9 +25,18 @@ from sportflex.core.engine import (
 from sportflex.core.events import EventStore, NullEventStore
 from sportflex.core.models import Slot, slot_bounds
 from sportflex.core.notify import Notifier
-from sportflex.core.routine import apply_saved_routine, build_routine, describe_routine, skip_wave
+from sportflex.core.refund import plan_refund_reminder
+from sportflex.core.routine import (
+    apply_saved_routine,
+    build_routine,
+    describe_routine,
+    fill_candidates,
+    open_dates,
+    open_days,
+    skip_wave,
+)
 from sportflex.core.rules import next_release, quota_reason
-from sportflex.core.storage import RoutineStore, WatchStore
+from sportflex.core.storage import BookingStore, RoutineStore, WatchStore
 from sportflex.core.venue import Venue
 from sportflex.providers import create_provider
 from sportflex.providers.base import Provider, ProviderError
@@ -33,6 +45,7 @@ from sportflex.core.identity import login_prefix
 from sportflex.runtime.captcha_ocr import read_captcha
 from sportflex.runtime.telegram_bot import TelegramBot
 
+ORDERS_BLOCKED = "另一個 Sport Flex 正在使用同一個 Telegram bot，這台已暫停下單，避免重複訂到。"
 SESSION_CHECK_SEC = 15 * 60  # keep-alive visit while no snipe is armed
 LOGIN_HOLD_SEC = 5 * 60  # how long the page waits on the login form for a captcha reply
 REPROMPT_SEC = 10 * 60  # still logged out and no reply: send a fresh captcha this often
@@ -75,6 +88,19 @@ class _DeadProvider:
         raise RuntimeError(self._reason)
 
 
+def _booking_snapshot(result: dict) -> dict:
+    """The fields a refund reminder needs, kept beside the unpaid-order watch."""
+    order = result.get("order") or {}
+    return {
+        "venue": result.get("venue") or "",
+        "venueName": result.get("venueName") or "",
+        "court": result.get("court") or "",
+        "date": result.get("date") or "",
+        "time": result.get("time") or "",
+        "order": {"no": order.get("no") or "", "luid": order.get("luid") or "", "paymentUrl": order.get("paymentUrl") or ""},
+    }
+
+
 def _board_complete(events: list[dict]) -> bool:
     """True when every court announced in the meta event was actually loaded."""
     expected = None
@@ -115,12 +141,14 @@ class AccountWorker:
         events: EventStore | None = None,
         bot: TelegramBot | None = None,
         coord: Coordinator | None = None,
+        booking_blocked: Callable[[], bool] | None = None,
     ) -> None:
         self.account = account
         self.notifier = notifier
         self.events = events or NullEventStore()
         self.bot = bot
         self.coord = coord
+        self.booking_blocked = booking_blocked  # another process is polling the same bot
         self.venues = {vid: venue for vid, venue in venues.items() if venue.provider == account.provider}
         self.snipes = {
             vid: SnipeJob(
@@ -135,6 +163,11 @@ class AccountWorker:
             )
             for vid, venue in self.venues.items()
         }
+        # Weekly slots on days already open (the routine's picked fillDates).
+        self.fills = {
+            vid: FillJob(venue, self._record_grab, self._alert, self.events, on_logout=self._logged_out, account_id=account.id)
+            for vid, venue in self.venues.items()
+        }
         self._routines: dict[str, dict] = {}
         self._load_routines()
         self.watch: WatchJob | None = None
@@ -146,6 +179,7 @@ class AccountWorker:
         self._hold_until = 0.0  # a captcha is waiting for its code: keep the page on the login form
         self._prompted_at = 0.0
         self._payments: list[dict] = []  # placed orders we're watching until they're paid or expire
+        self._bookings: list[dict] = BookingStore(self.account.id).load()
         self._logout_reason = "登入已失效"
         self._prompts = 0  # captchas sent this round without a reply
         self._gave_up = False
@@ -450,7 +484,14 @@ class AccountWorker:
                 return True
         return False
 
+    def _orders_blocked(self) -> bool:
+        return bool(self.booking_blocked and self.booking_blocked())
+
     def _tick(self, provider: Provider) -> None:
+        # Another process is polling the same bot, so its browsers are sniping too.
+        # Stay quiet until that conflict clears instead of placing a second order.
+        if self._orders_blocked():
+            return
         self._apply_routines()
         active = [job for job in self.snipes.values() if job.active]
         if time.time() < self._hold_until and not (active and self._snipe_near_release()):
@@ -468,18 +509,29 @@ class AccountWorker:
                     self.watch.tick(provider)
                 except Exception as exc:
                     self.watch.log.note(f"盯場出錯：{exc}")
+            for fill in self.fills.values():
+                try:
+                    fill.tick(provider)
+                except Exception as exc:
+                    fill.log.note(f"盯已開放日期出錯：{exc}")
             if not active:  # the snipe checks its own login; keep-alive is for an idle account
                 self._keepalive(provider)
         if self.watch and not self.watch.running:
             WatchStore(self.account.id).clear()
         self._check_payments(provider)
+        self._check_refunds()
         self._maybe_prompt_relogin(provider)
 
     # ---- unpaid orders ---------------------------------------------------
 
     def _track_payment(self, result: dict) -> None:
         order = result.get("order") or {}
+        if not order:
+            return
         if not (order.get("luid") and order.get("lid")):
+            # No online payment to watch. A booking that never asked for a card is already held.
+            if not str(order.get("paymentUrl") or "").strip():
+                self._schedule_refund(result)
             return
         placed = time.time()
         self._payments.append(
@@ -491,12 +543,15 @@ class AccountWorker:
                 "stage": "remind",
                 "next": placed + PAY_REMIND_SEC,
                 "misses": 0,
+                "booking": _booking_snapshot(result),
             }
         )
 
     def _check_payments(self, provider: Provider) -> None:
-        """PAY_REMIND_SEC after an order: still on the unpaid list -> remind once. After the site's
-        deadline: report that it is off the list (paid, or cancelled for not paying)."""
+        """PAY_REMIND_SEC after an order: still on the unpaid list -> remind once. While the payment
+        window is open, leaving that list means it was paid, so the refund reminder can be armed.
+        After the site's deadline, report that it is off the list (paid at the last moment, or
+        cancelled for not paying) and do not arm a refund reminder."""
         now = time.time()
         for item in list(self._payments):
             if now < item["next"]:
@@ -515,7 +570,7 @@ class AccountWorker:
             unpaid = item["luid"] in pending
             if item["stage"] == "remind":
                 if not unpaid:
-                    self._event("payment_done", f"訂單 {item['no']} 已不在待付款清單（已付款）")
+                    self._note_paid(item)
                     self._payments.remove(item)
                     continue
                 left = max(0, int(item["timeout"] - (now - item["placed"])) // 60)
@@ -526,19 +581,88 @@ class AccountWorker:
                     f"訂單 {item['no']} 還沒付款，約 {left} 分鐘後會被取消。\n"
                     f"打開連結 → 點「待付款」→ 前往付款\n{item['paymentUrl']}{carrier}",
                 )
-                item.update(stage="final", next=item["placed"] + item["timeout"] + 60)
-            elif unpaid:  # the site hasn't cleared it yet
-                if now > item["placed"] + item["timeout"] + 5 * 60:
-                    self._payments.remove(item)
+                item.update(stage="watch", next=now + 60)
+                continue
+            if not unpaid:
+                if now <= item["placed"] + item["timeout"]:
+                    self._note_paid(item)
                 else:
-                    item["next"] = now + 60
-            else:
-                self._event("payment_closed", f"訂單 {item['no']} 已不在待付款清單")
-                self._alert(
-                    f"訂單 {item['no']} 已結束",
-                    f"{item['label']} 已不在待付款清單：有付款就已完成；沒付款的話已因逾時被取消。",
-                )
+                    self._event("payment_closed", f"訂單 {item['no']} 已不在待付款清單")
+                    self._alert(
+                        f"訂單 {item['no']} 已結束",
+                        f"{item['label']} 已不在待付款清單：有付款就已完成；沒付款的話已因逾時被取消。",
+                    )
                 self._payments.remove(item)
+                continue
+            if now > item["placed"] + item["timeout"] + 5 * 60:  # the site hasn't cleared it yet
+                self._payments.remove(item)
+            else:
+                item["next"] = now + 60
+
+    def _note_paid(self, item: dict) -> None:
+        self._event("payment_done", f"訂單 {item['no']} 已不在待付款清單（已付款）")
+        self._schedule_refund(item.get("booking") or {})
+
+    def _schedule_refund(self, result: dict) -> None:
+        """Remember a paid booking so the morning before the no-refund cutoff can ask once."""
+        venue = self.venues.get(str(result.get("venue") or ""))
+        if venue is None:
+            return
+        plan = plan_refund_reminder(venue, result)
+        if not plan or plan.get("passed") or not plan.get("remindAt"):
+            return
+        if any(item.get("key") == plan["key"] for item in self._bookings):
+            return
+        self._bookings.append(
+            {
+                "key": plan["key"],
+                "venue": venue.id,
+                "title": plan["title"],
+                "body": plan["body"],
+                "deadline": plan["deadline"],
+                "remindAt": plan["remindAt"],
+                "reminded": False,
+            }
+        )
+        self._save_bookings()
+
+    def _check_refunds(self, now: datetime | None = None) -> None:
+        """Send the cancel-or-keep reminder once, then drop the booking after the cutoff."""
+        if not self._bookings:
+            return
+        kept: list[dict] = []
+        changed = False
+        for item in self._bookings:
+            try:
+                deadline = datetime.fromisoformat(item["deadline"])
+                remind_at = datetime.fromisoformat(item["remindAt"])
+            except (KeyError, TypeError, ValueError):
+                changed = True
+                continue
+            if deadline.tzinfo is None or remind_at.tzinfo is None:
+                changed = True
+                continue
+            current = (now or datetime.now(deadline.tzinfo)).astimezone(deadline.tzinfo)
+            if current >= deadline:
+                changed = True
+                continue
+            if not item.get("reminded") and current >= remind_at:
+                self._alert(item.get("title") or "要不要取消？", item.get("body") or "", level="info")
+                self._event(
+                    "refund_reminder",
+                    item.get("title") or "退費期限",
+                    venue=item.get("venue") or "",
+                    data={"body": item.get("body") or ""},
+                )
+                item["reminded"] = True
+                changed = True
+            kept.append(item)
+        if changed:
+            self._bookings = kept
+            self._save_bookings()
+
+    def _save_bookings(self) -> None:
+        BookingStore(self.account.id).save(self._bookings)
 
     # ---- staying logged in -----------------------------------------------
 
@@ -691,9 +815,10 @@ class AccountWorker:
             "auto",
         )
 
-    def _alert(self, title: str, body: str) -> None:
-        # The pre-release confirmation is the all-clear. Other alerts are problems.
-        level = "info" if title.endswith("開搶前確認") else "warn"
+    def _alert(self, title: str, body: str, *, level: str | None = None) -> None:
+        # The pre-release confirmation is the all-clear. A refund reminder is a question, not a problem.
+        if level is None:
+            level = "info" if title.endswith("開搶前確認") else "warn"
         self._event("alert", title, level=level, data={"body": body})
         self.notifier.send(title, f"{body}\n帳號：{self.account.display}")
 
@@ -965,6 +1090,9 @@ class AccountWorker:
         return self.call(run, timeout=60)
 
     def grab(self, venue: Venue, category: str, court_id: str, query_date: str, slot: Slot) -> dict:
+        if self._orders_blocked():
+            raise RuntimeError(ORDERS_BLOCKED)
+
         def run(provider: Provider) -> dict:
             self._ensure_page_free()
             _start, _end, hours = slot_bounds(slot.time)
@@ -1025,7 +1153,8 @@ class AccountWorker:
         """Save a weekly pattern and arm the upcoming release when it matches.
 
         `routine` is None to turn the pattern off. Saving again clears a skipped wave,
-        so the next matching release is armed immediately.
+        so the next matching release is armed immediately. `fillDates` picks open days
+        to watch as well; `fillAll` picks every open day on the chosen weekdays.
         """
 
         def run(_provider: Provider) -> dict:
@@ -1040,10 +1169,23 @@ class AccountWorker:
                 category = routine.get("category") or venue.categories[0]
                 if category not in venue.categories:
                     raise ValueError(f"{venue.display_name} 沒有 {category}")
-                saved = build_routine(venue.rules, category, routine.get("weekdays") or [], routine.get("targets") or [])
+                saved = build_routine(
+                    venue.rules,
+                    category,
+                    routine.get("weekdays") or [],
+                    routine.get("targets") or [],
+                    fill_dates=routine.get("fillDates") or [],
+                )
+                candidates = fill_candidates(saved, venue.rules)
+                if routine.get("fillAll"):
+                    saved["fillDates"] = candidates
+                for day in saved["fillDates"]:
+                    if day not in candidates:
+                        raise ValueError(f"{int(day[5:7])}/{int(day[8:10])} 不是已開放的日子")
                 self._routines[venue.id] = saved
                 store.save(saved)
                 apply_saved_routine(job, saved)
+            self._sync_fill(venue.id)
             return self.routine_state(venue)
 
         return self.call(run)
@@ -1059,9 +1201,13 @@ class AccountWorker:
             "weekdays": [],
             "targets": [],
             "skipDate": "",
+            "fillDates": [],
+            "fillCandidates": [],
+            "openDays": open_days(venue.rules),
             "label": "",
             "due": False,
             "release": release,
+            "fill": self.fills[venue.id].state(),
         }
         if not routine:
             return state
@@ -1076,6 +1222,8 @@ class AccountWorker:
             weekdays=list(routine.get("weekdays") or []),
             targets=list(routine.get("targets") or []),
             skipDate=routine.get("skipDate") or "",
+            fillDates=open_dates(routine, venue.rules),
+            fillCandidates=fill_candidates(routine, venue.rules),
             label=describe_routine(routine),
             due=weekday in set(routine.get("weekdays") or []) and (routine.get("skipDate") or "") != target,
         )
@@ -1092,6 +1240,26 @@ class AccountWorker:
     def _apply_routines(self, now: datetime | None = None) -> None:
         for venue_id, job in self.snipes.items():
             apply_saved_routine(job, self._routines.get(venue_id), now)
+            self._sync_fill(venue_id, now)
+
+    def _sync_fill(self, venue_id: str, now: datetime | None = None) -> None:
+        """Point the open-day watch at the routine's open dates.
+
+        A day the snipe or a manual watch is already working on is left to that job,
+        so the two never race for the same slot.
+        """
+        routine = self._routines.get(venue_id)
+        fill = self.fills[venue_id]
+        dates = open_dates(routine, fill.venue.rules, now)
+        if dates:
+            busy = set()
+            job = self.snipes[venue_id]
+            if job.spec and job.spec.get("phase") in ACTIVE_PHASES:
+                busy.add(job.spec.get("targetDate") or "")
+            if self.watch and self.watch.running and self.watch.venue.id == venue_id:
+                busy.add(self.watch.spec.get("date") or "")
+            dates = [day for day in dates if day not in busy]
+        fill.sync((routine or {}).get("category") or "", (routine or {}).get("targets") or [], dates)
 
     def _remember_routine_skip(self, venue: Venue, job: SnipeJob) -> None:
         updated = skip_wave(self._routines.get(venue.id), job.spec)

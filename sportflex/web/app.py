@@ -24,7 +24,9 @@ from sportflex.core.rules import next_release
 from sportflex.core.venue import get_venue
 from sportflex.providers.base import ProviderError
 from sportflex.core.identity import server_label
-from sportflex.runtime.pool import WorkerPool
+from sportflex.paths import OUTPUT_DIR
+from sportflex.runtime.instance_lock import InstanceAlreadyRunning, InstanceLock
+from sportflex.runtime.pool import WorkerPool, bot_from_env
 
 INDEX = Path(__file__).resolve().parent / "static" / "index.html"
 SHUTDOWN = threading.Event()
@@ -169,6 +171,7 @@ class RoutineBody(Target):
     category: str | None = None
     weekdays: list[int] = Field(default_factory=list)
     targets: list[SnipeTarget] = Field(default_factory=list)
+    fillDates: list[str] = Field(default_factory=list)  # open days on those weekdays to watch as well
 
 
 class WatchBody(Target):
@@ -179,6 +182,7 @@ class WatchBody(Target):
     timeTo: str = ""
     courtId: str = ""
     interval: int | None = None
+    untilFull: bool = False
 
 
 # ---- routes ---------------------------------------------------------------
@@ -333,6 +337,7 @@ def routine(request: Request, body: RoutineBody):
             "category": body.category or found.categories[0],
             "weekdays": body.weekdays,
             "targets": [item.model_dump() for item in body.targets],
+            "fillDates": body.fillDates,
         }
     return {"ok": True, **worker.set_routine(found, spec)}
 
@@ -416,35 +421,53 @@ async def events(request: Request, venue: str | None = None, account: str | None
     return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
 
 
-def serve(port: int = 8765, host: str = "127.0.0.1", open_browser: bool = True) -> None:
+def serve(port: int = 8765, host: str = "127.0.0.1", open_browser: bool = True) -> int:
     import uvicorn
 
     # Before workers start, so Telegram captchas and /status use this name.
     os.environ.setdefault("SPORT_FLEX_INSTANCE", f"{socket.gethostname()}:{port}")
-    url = f"http://127.0.0.1:{port}/"
-    print(
-        f"搶場服務聽在 {host}:{port}（本機開啟 {url}，API 文件：{url}docs，Telegram 這台是 {server_label()}）",
-        flush=True,
-    )
-    if _ui_token():
-        url += "?token=" + urllib.parse.quote(_ui_token())
-        print("網頁需要 token（SPORT_FLEX_UI_TOKEN）；第一次請開帶 ?token= 的網址", flush=True)
-    elif host not in LOOPBACK_HOSTS:
+    # Same machine: the lock refuses a second UI before it opens browsers or touches Telegram.
+    # Another machine does not share the file; the bot probe below is that check.
+    lock = InstanceLock(OUTPUT_DIR / "instance.lock")
+    try:
+        lock.acquire()
+    except InstanceAlreadyRunning as exc:
+        print(str(exc), flush=True)
+        return 1
+    try:
+        bot = bot_from_env()
+        if bot is not None:
+            refusal = bot.probe_other_instance()
+            if refusal:
+                print(refusal, flush=True)
+                return 1
+        url = f"http://127.0.0.1:{port}/"
         print(
-            f"⚠️ 監聽 {host} 但沒有設定 SPORT_FLEX_UI_TOKEN：同網段的人都能看帳號、下訂單。"
-            "建議在 .env 設一組 token。",
+            f"搶場服務聽在 {host}:{port}（本機開啟 {url}，API 文件：{url}docs，Telegram 這台是 {server_label()}）",
             flush=True,
         )
-    if open_browser:
-        threading.Thread(target=_open_when_up, args=(port, url), daemon=True).start()
+        if _ui_token():
+            url += "?token=" + urllib.parse.quote(_ui_token())
+            print("網頁需要 token（SPORT_FLEX_UI_TOKEN）；第一次請開帶 ?token= 的網址", flush=True)
+        elif host not in LOOPBACK_HOSTS:
+            print(
+                f"⚠️ 監聽 {host} 但沒有設定 SPORT_FLEX_UI_TOKEN：同網段的人都能看帳號、下訂單。"
+                "建議在 .env 設一組 token。",
+                flush=True,
+            )
+        if open_browser:
+            threading.Thread(target=_open_when_up, args=(port, url), daemon=True).start()
 
-    class Server(uvicorn.Server):
-        def handle_exit(self, sig, frame) -> None:
-            SHUTDOWN.set()  # Ctrl+C: let open event streams end instead of waiting on them
-            super().handle_exit(sig, frame)
+        class Server(uvicorn.Server):
+            def handle_exit(self, sig, frame) -> None:
+                SHUTDOWN.set()  # Ctrl+C: let open event streams end instead of waiting on them
+                super().handle_exit(sig, frame)
 
-    config = uvicorn.Config(app, host=host, port=port, log_level="warning", timeout_graceful_shutdown=3)
-    Server(config).run()
+        config = uvicorn.Config(app, host=host, port=port, log_level="warning", timeout_graceful_shutdown=3)
+        Server(config).run()
+        return 0
+    finally:
+        lock.release()
 
 
 def _open_when_up(port: int, url: str) -> None:

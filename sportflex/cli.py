@@ -9,6 +9,7 @@ from sportflex.core.engine import grab
 from sportflex.core.events import EventStore
 from sportflex.core.snipe_stats import stats_lines
 from sportflex.core.models import iter_dates, slot_bounds, slot_matches
+from sportflex.core.refund import reminder_line
 from sportflex.core.rules import quota_reason
 from sportflex.core.venue import get_venue, load_venues
 from sportflex.paths import OUTPUT_DIR
@@ -87,11 +88,12 @@ def main(argv: list[str] | None = None) -> int:
             from sportflex.web.app import serve
 
             try:
-                serve(port=args.port, host=args.host, open_browser=not args.no_browser)
+                code = serve(port=args.port, host=args.host, open_browser=not args.no_browser)
             except KeyboardInterrupt:  # uvicorn re-raises Ctrl+C after its clean shutdown
-                pass
-            print("已關閉", flush=True)
-            return 0
+                code = 0
+            if code == 0:
+                print("已關閉", flush=True)
+            return code
         if args.command == "book":
             return _book(args)
         if args.command == "history":
@@ -263,6 +265,9 @@ def _book(args) -> int:
                 print(f"發票請選「手機載具」，填 {order['carrier']}")
             for line in calendar_lines(result):
                 print(line)
+            planned = reminder_line(result)
+            if planned:
+                print(planned)
             calendar = result.get("calendar")
             if calendar:
                 print(f"行事曆檔：{save_ics(calendar, OUTPUT_DIR)}")

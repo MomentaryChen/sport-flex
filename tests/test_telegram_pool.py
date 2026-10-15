@@ -72,6 +72,30 @@ def pool(tmp_path, monkeypatch):
     return built
 
 
+def test_start_does_not_open_browsers_when_the_bot_is_taken(pool):
+    pool.bot.probe_other_instance = lambda: "另一個 Sport Flex 正在使用同一個 Telegram bot"
+
+    def fail_start(*_args, **_kwargs):
+        raise AssertionError("browser started beside another poller")
+
+    for worker in pool.workers.values():
+        worker.start = fail_start
+    with pytest.raises(RuntimeError, match="另一個 Sport Flex"):
+        pool.start()
+
+
+def test_conflict_pauses_orders_on_every_account(pool):
+    assert pool.booking_paused() is False
+    pool.set_booking_paused(True)
+    pool.set_booking_paused(True)
+    assert pool.booking_paused() is True
+    assert all(worker.booking_blocked() for worker in pool.workers.values())
+    assert len(pool.events.events(kind="telegram_conflict", days=1)) == 1
+    pool.set_booking_paused(False)
+    assert pool.booking_paused() is False
+    assert pool.events.events(kind="telegram_resumed", days=1)
+
+
 def test_accounts_share_one_coordinator(pool):
     coords = {id(worker.coord) for worker in pool.workers.values()}
     assert coords == {id(pool.coord)} and pool.coord is not None
@@ -160,6 +184,12 @@ def test_watch_command_and_quota(pool):
     pool.worker.set_watch = set_watch
     text = pool.start_watch_text(None, None, "羽球", {"date": "2026-10-20", "timeFrom": "18:00", "timeTo": "23:00", "court": "A"})
     assert "盯場" in text and pool.worker.watch.spec["courtId"] == "A"
+    assert pool.worker.watch.spec["untilFull"] is False
+    filled = pool.start_watch_text(
+        None, None, "羽球", {"date": "2026-10-20", "timeFrom": "18:00", "timeTo": "23:00", "court": "A", "untilFull": True}
+    )
+    assert pool.worker.watch.spec["untilFull"] is True
+    assert "會一直搶到當天上限才停" in filled
     assert pool.stop_watch_text(None, None).startswith("已停止盯場")
 
     def with_mine(venue, category, query_date):

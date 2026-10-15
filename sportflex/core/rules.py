@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
 from sportflex.core.models import slot_bounds
 
@@ -18,6 +18,8 @@ class BookingRules(BaseModel):
     timezone: str = "Asia/Taipei"
     window_days: int = Field(14, ge=1)  # bookable days counting today as day 1
     release_time: str = "06:00"  # when the next day of the window opens
+    open_time: str = "06:00"  # earliest bookable start
+    close_time: str = "22:00"  # when the last slot ends
     slot_hours: float = Field(1, gt=0)  # length of one booking
     align_minutes: int = Field(60, ge=1)  # a booking must start on this boundary
     max_hours_per_day: float = 2  # per account, per venue, per day
@@ -32,13 +34,31 @@ class BookingRules(BaseModel):
     watch_interval_sec: int = 45
     watch_min_interval_sec: int = 30
 
-    @field_validator("release_time")
+    @field_validator("release_time", "open_time", "close_time")
     @classmethod
-    def _hhmm(cls, value: str) -> str:
-        hour, minute = [int(part) for part in value.split(":")]
+    def _hhmm(cls, value: str, info: ValidationInfo) -> str:
+        name = info.field_name or "time"
+        try:
+            hour, minute = [int(part) for part in value.split(":")]
+        except (ValueError, AttributeError):
+            raise ValueError(f"{name} 要是 HH:MM") from None
+        if name == "close_time" and hour == 24 and minute == 0:
+            return "24:00"
         if not (0 <= hour < 24 and 0 <= minute < 60):
-            raise ValueError("release_time 要是 HH:MM")
+            raise ValueError(f"{name} 要是 HH:MM")
         return f"{hour:02d}:{minute:02d}"
+
+    @model_validator(mode="after")
+    def _hours_cover_a_slot(self) -> BookingRules:
+        open_min = _clock_minutes(self.open_time)
+        close_min = _clock_minutes(self.close_time)
+        if open_min >= close_min:
+            raise ValueError("close_time 要晚於 open_time")
+        slot = int(round(self.slot_hours * 60))
+        first = _aligned_at_or_after(open_min, self.align_minutes)
+        if first + slot > close_min:
+            raise ValueError("營業時間至少要容納一個時段")
+        return self
 
     @field_validator("timezone")
     @classmethod
@@ -107,6 +127,10 @@ def validate_targets(rules: BookingRules, raw: list) -> list[dict]:
             raise ValueError(f"時間格式不對：{when}") from None
         if (hour * 60 + minute) % rules.align_minutes:
             raise ValueError(f"開始時間要對齊每 {rules.align_minutes} 分鐘")
+        start = hour * 60 + minute
+        slot = int(round(rules.slot_hours * 60))
+        if start < _clock_minutes(rules.open_time) or start + slot > _clock_minutes(rules.close_time):
+            raise ValueError(f"{hour:02d}:{minute:02d} 不在營業時間 {rules.open_time}–{rules.close_time}")
         if court_id and rules.distinct_courts and court_id in seen:
             raise ValueError("同一天的目標必須是不同場")
         if court_id:
@@ -149,6 +173,18 @@ def holds_from_board(courts: list[dict]) -> list[dict]:
                 }
             )
     return held
+
+
+def _clock_minutes(label: str) -> int:
+    hour, minute = [int(part) for part in label.split(":")]
+    return hour * 60 + minute
+
+
+def _aligned_at_or_after(minute: int, step: int) -> int:
+    remainder = minute % step
+    if remainder:
+        return minute + (step - remainder)
+    return minute
 
 
 def slot_end(start: str, hours: float) -> str:

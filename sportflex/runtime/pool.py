@@ -27,6 +27,15 @@ from sportflex.runtime.telegram_cmd import (
 )
 from sportflex.runtime.worker import AccountWorker
 
+PAUSED_TITLE = "已暫停下單"
+PAUSED_BODY = (
+    "另一個實例持續佔用同一個 Telegram bot（409 Conflict）。"
+    "這台已暫停搶訂、盯場和下單，避免同一個帳號重複訂到。"
+    "多帳號錯開只在同一個程式裡有效。請只留一個實例；對方關掉後這台會自動恢復。"
+)
+RESUMED_TITLE = "恢復下單"
+RESUMED_BODY = "另一個實例已離開，這台繼續搶訂。"
+
 
 def bot_from_env() -> TelegramBot | None:
     """Telegram re-login is on whenever the bot is configured; SPORT_FLEX_TELEGRAM_RELOGIN=0 turns it off."""
@@ -52,12 +61,29 @@ class WorkerPool:
         self.events = events or EventStore()
         self.bot = bot or bot_from_env()
         self.coord = Coordinator()
+        self._booking_paused = False
+        self._pause_guard = threading.Lock()
         self.workers = {
-            account_id: AccountWorker(account, self.venues, self.notifier, self.events, self.bot, coord=self.coord)
+            account_id: AccountWorker(
+                account,
+                self.venues,
+                self.notifier,
+                self.events,
+                self.bot,
+                coord=self.coord,
+                booking_blocked=self.booking_paused,
+            )
             for account_id, account in self.accounts.items()
         }
 
     def start(self) -> None:
+        if self.bot:
+            # After serve()'s probe, and before any browser opens. A peer that appeared
+            # in between must not get a second set of accounts placing orders.
+            refusal = self.bot.probe_other_instance()
+            if refusal:
+                print(refusal, flush=True)
+                raise RuntimeError(refusal)
         threads = [threading.Thread(target=worker.start) for worker in self.workers.values()]
         for thread in threads:
             thread.start()
@@ -67,6 +93,7 @@ class WorkerPool:
             if worker.startup_error:
                 print(f"帳號 {worker.account.display} 啟動失敗：{worker.startup_error}", flush=True)
         if self.bot:
+            self.bot.on_booking_pause = self.set_booking_paused
             self.bot.start(self)
             print(
                 f"Telegram 已啟用，這台是 {server_label()}：登入失效會傳驗證碼（圖片會標這台名稱）",
@@ -88,6 +115,36 @@ class WorkerPool:
         for thread in threads:
             thread.join()
         self.events.close()
+
+    def booking_paused(self) -> bool:
+        return self._booking_paused
+
+    def set_booking_paused(self, paused: bool) -> None:
+        """Stop or resume orders after Telegram reports another getUpdates poller."""
+        with self._pause_guard:
+            if paused == self._booking_paused:
+                return
+            self._booking_paused = paused
+        if paused:
+            print(PAUSED_BODY, flush=True)
+            self._notify(PAUSED_TITLE, PAUSED_BODY)
+            self._record_pause("telegram_conflict", PAUSED_BODY, level="warn")
+            return
+        print(RESUMED_BODY, flush=True)
+        self._notify(RESUMED_TITLE, RESUMED_BODY)
+        self._record_pause("telegram_resumed", RESUMED_BODY)
+
+    def _notify(self, title: str, body: str) -> None:
+        try:
+            self.notifier.send(title, body)
+        except Exception as exc:
+            print(f"[通知] 實例狀態送不出去：{exc}", flush=True)
+
+    def _record_pause(self, kind: str, message: str, level: str = "info") -> None:
+        try:
+            self.events.record(kind, message, level=level)
+        except Exception:
+            pass
 
     def resolve(self, venue_id: str | None, account_id: str | None) -> tuple[Venue, AccountWorker]:
         venue = get_venue(venue_id)
@@ -179,7 +236,14 @@ class WorkerPool:
         venue, worker, category = self._target(account_id, venue_id, category)
         resolved = self._resolve_targets(worker, venue, category, spec["targets"])
         state = worker.set_routine(
-            venue, {"category": category, "weekdays": spec["weekdays"], "targets": resolved}
+            venue,
+            {
+                "category": category,
+                "weekdays": spec["weekdays"],
+                "targets": resolved,
+                "fillDates": spec.get("fillDates") or [],
+                "fillAll": bool(spec.get("fillAll")),
+            },
         )
         return format_routine(venue.display_name, state)
 
@@ -215,6 +279,7 @@ class WorkerPool:
             "timeTo": spec.get("timeTo") or "",
             "courtId": court_id,
             "courtName": court_name,
+            "untilFull": bool(spec.get("untilFull")),
         }
         state = worker.set_watch(venue, saved)
         return format_watch(venue.display_name, state)

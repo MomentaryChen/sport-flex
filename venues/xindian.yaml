@@ -12,6 +12,8 @@ rules:
   timezone: Asia/Taipei
   window_days: 14        # APP/網頁可預約當日起第 1~14 天
   release_time: "06:00"  # 每天 06:00 開放第 14 天
+  open_time: "06:00"     # 最早可開始
+  close_time: "22:00"    # 最晚一個時段結束
   slot_hours: 1          # 每次預約限 1 小時
   align_minutes: 60
   max_hours_per_day: 2   # 同一帳號每天最多 2 小時

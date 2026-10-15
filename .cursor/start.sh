@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Boot the court UI. Idempotent: leave an existing listener alone.
+# The process also takes an exclusive lock and, when Telegram is configured,
+# refuses to start if another machine is already polling that bot.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
