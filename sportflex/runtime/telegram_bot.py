@@ -33,6 +33,7 @@ HELP = (
     "/snipe 19:00 [20:00]  搶下一波（任一場）\n"
     "/snipe A 19:00  指定場地\n"
     "/weekly 二四 20:00  每週固定，開放前自動排第 14 天\n"
+    "/weekly 二四 20:00 補  另外盯 14 天內已開放的這些日子（補 10/20 只挑那天）\n"
     "/weekly off  停用每週固定\n"
     "/cancel  取消搶訂\n"
     "/watch 明天 晚上  盯已開放的時段，搶到一筆就停\n"
@@ -330,15 +331,12 @@ class TelegramBot:
                 self.send_text(ctrl.routine_text(account_id, venue_id))
                 return
             self._drop_confirm()
-            spec = parse_weekly_args(tokens)
+            spec = parse_weekly_args(tokens, today)
             if spec["stop"]:
                 self._background(lambda: ctrl.clear_routine_text(account_id, venue_id))
             else:
-                weekdays = spec["weekdays"]
-                targets = spec["targets"]
-                self._background(
-                    lambda: ctrl.set_routine_text(account_id, venue_id, category, {"weekdays": weekdays, "targets": targets})
-                )
+                routine = {key: spec[key] for key in ("weekdays", "targets", "fillDates", "fillAll")}
+                self._background(lambda: ctrl.set_routine_text(account_id, venue_id, category, routine))
         elif name == "/watch":
             if not tokens:
                 self.send_text(ctrl.watch_text(account_id, venue_id))

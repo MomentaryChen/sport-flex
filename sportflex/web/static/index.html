@@ -200,6 +200,26 @@
     }
     .wd-btn.on { background: var(--accent); border-color: var(--accent); color: #fff; }
     .routine-actions { display: grid; gap: 8px; margin-top: 10px; }
+    .fill-box { margin-top: 12px; padding: 12px; border-radius: 12px; background: var(--surface-2); border: 1px solid var(--line); }
+    .fill-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+    .fill-title { font-size: 13px; font-weight: 700; color: var(--ink-2); }
+    .fill-range { font-size: 12px; color: var(--ink-3); white-space: nowrap; }
+    .fill-days { display: grid; grid-template-columns: repeat(auto-fill, minmax(64px, 1fr)); gap: 6px; margin-top: 10px; }
+    .fill-day {
+      display: grid; justify-items: center; gap: 1px; padding: 7px 4px; border-radius: 10px;
+      border: 1px solid var(--line); background: var(--surface); color: var(--ink-2); cursor: pointer;
+    }
+    .fill-day b { font-size: 15px; line-height: 1.2; }
+    .fill-day span { font-size: 11px; color: var(--ink-3); }
+    .fill-day.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-ink); }
+    .fill-day.on span { color: var(--accent-ink); }
+    .fill-day.on b::before { content: "✓ "; font-size: 12px; }
+    .fill-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; }
+    .fill-foot .hint { margin: 0; }
+    .fill-links { display: flex; gap: 4px; flex: 0 0 auto; }
+    .link-btn { border: 0; background: transparent; color: var(--accent-ink); font-size: 12px; padding: 2px 6px; border-radius: 6px; cursor: pointer; }
+    .link-btn:hover { background: var(--accent-soft); }
+    .fill-empty { font-size: 12px; color: var(--ink-3); margin: 10px 0 0; }
 
     .stepper { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; margin: 4px 0 12px; }
     .step { text-align: center; font-size: 11px; color: var(--ink-3); }
@@ -384,6 +404,21 @@
             <div class="weekdays" id="weekdays" role="group" aria-label="星期"></div>
             <div class="targets" id="routineTargets"></div>
             <button class="btn add-target" id="addRoutineTarget" type="button">＋ 再加一個時段</button>
+            <div class="fill-box hidden" id="fillBox">
+              <div class="fill-head">
+                <span class="fill-title">已開放的日子也盯</span>
+                <span class="fill-range" id="fillRange"></span>
+              </div>
+              <div class="fill-days" id="fillDays" role="group" aria-label="已開放的日子"></div>
+              <p class="fill-empty hidden" id="fillEmpty">先選星期，這裡會列出範圍內可盯的日子。</p>
+              <div class="fill-foot" id="fillFoot">
+                <p class="hint">點選要盯的日期，有人退訂就送出訂單</p>
+                <div class="fill-links">
+                  <button class="link-btn" id="fillAll" type="button">全選</button>
+                  <button class="link-btn" id="fillNone" type="button">清除</button>
+                </div>
+              </div>
+            </div>
             <p class="hint" id="routineStatus">選星期和時段後套用。之後每天開放前會自動排上第 14 天。</p>
             <div class="routine-actions">
               <button class="btn btn-primary btn-block" id="routineBtn" type="button">套用每週搶訂</button>
@@ -801,16 +836,74 @@
         });
         button.dataset.day = String(index);
         button.onclick = () => {
-          const on = !button.classList.contains("on");
-          button.classList.toggle("on", on);
-          button.setAttribute("aria-pressed", on ? "true" : "false");
+          toggleChip(button);
+          renderFillDays();
         };
         return button;
       }));
     }
 
+    function toggleChip(button) {
+      const on = !button.classList.contains("on");
+      button.classList.toggle("on", on);
+      button.setAttribute("aria-pressed", on ? "true" : "false");
+    }
+
     function readWeekdays() {
       return [...$("weekdays").querySelectorAll("button.on")].map((button) => Number(button.dataset.day));
+    }
+
+    function isoWeekday(iso) {
+      const [year, month, day] = iso.split("-").map(Number);
+      return (new Date(Date.UTC(year, month - 1, day)).getUTCDay() + 6) % 7;  // Monday = 0, like DAYS
+    }
+
+    function shortDay(iso) {
+      const [, month, day] = iso.split("-").map(Number);
+      return `${month}/${day}（${DAYS[isoWeekday(iso)]}）`;
+    }
+
+    // Open days on the picked weekdays. Picks survive a weekday change while the day is still offered.
+    function renderFillDays(picked) {
+      const keep = new Set(picked || readFillDays());
+      const weekdays = new Set(readWeekdays());
+      const skip = (state.routine && state.routine.skipDate) || "";
+      const open = (state.routine && state.routine.openDays) || [];
+      const days = open.filter((day) => weekdays.has(isoWeekday(day)) && day !== skip);
+      $("fillDays").replaceChildren(...days.map((day) => {
+        const on = keep.has(day);
+        const [, month, date] = day.split("-").map(Number);
+        const button = el("button", {
+          type: "button",
+          class: "fill-day" + (on ? " on" : ""),
+          "aria-pressed": on ? "true" : "false",
+          "aria-label": shortDay(day),
+        });
+        button.append(el("b", { text: `${month}/${date}` }), el("span", { text: "週" + DAYS[isoWeekday(day)] }));
+        button.dataset.date = day;
+        button.onclick = () => toggleChip(button);
+        return button;
+      }));
+      $("fillRange").textContent = open.length ? `範圍 ${monthDay(open[0])} – ${monthDay(open[open.length - 1])}` : "";
+      $("fillBox").classList.toggle("hidden", !open.length);
+      $("fillDays").classList.toggle("hidden", !days.length);
+      $("fillFoot").classList.toggle("hidden", !days.length);
+      $("fillEmpty").classList.toggle("hidden", !!days.length);
+    }
+
+    function monthDay(iso) {
+      const [, month, day] = iso.split("-").map(Number);
+      return `${month}/${day}`;
+    }
+
+    function setFillDays(on) {
+      $("fillDays").querySelectorAll("button").forEach((button) => {
+        if (button.classList.contains("on") !== on) toggleChip(button);
+      });
+    }
+
+    function readFillDays() {
+      return [...$("fillDays").querySelectorAll("button.on")].map((button) => button.dataset.date);
     }
 
     function renderRoutineTargets(rows) {
@@ -833,7 +926,13 @@
       } else {
         next = `下一波 ${release.targetLabel || ""} 不是選定的星期，到了會再排。`;
       }
-      return `已套用：${data.label}。${next}`;
+      return `已套用：${data.label}。${next}${fillDatesText(data)}`;
+    }
+
+    function fillDatesText(data) {
+      if (!(data.fillDates || []).length) return "";
+      const dates = ((data.fill && data.fill.dates) || []).map((item) => shortDay(item.date));
+      return dates.length ? ` 也在盯已開放的 ${dates.join("、")}。` : " 選的已開放日子都已訂到，或正由搶訂／盯場處理。";
     }
 
     function showRoutine(data, fill) {
@@ -841,8 +940,12 @@
       state.routine = data;
       $("routineStatus").textContent = routineStatusText(data);
       $("routineOff").classList.toggle("hidden", !data.enabled);
-      if (!fill) return;
+      if (!fill) {
+        renderFillDays();  // a new day may have opened; keep what is picked on screen
+        return;
+      }
       renderWeekdays(data.weekdays || []);
+      renderFillDays(data.fillDates || []);
       renderRoutineTargets((data.targets && data.targets.length) ? data.targets : [{ courtId: ANY, time: preferredTime("20:00") }]);
     }
 
@@ -872,10 +975,12 @@
       const days = weekdays.map((day) => "週" + DAYS[day]).join("、");
       const lines = named.map((row) => `・${row.name} ${row.time}`).join("\n");
       const who = $("accountSelect").selectedOptions[0]?.textContent || state.account;
-      if (!confirm(`用「${who}」設定每週固定\n${state.venue.name} ${state.category}\n${days}\n${lines}\n\n之後凡是這些星期，都會在當天 ${state.venue.rules.release_time} 開放前自動排上第 ${state.venue.rules.window_days} 天。付款仍要自己完成。`)) return;
+      const fillDates = readFillDays();
+      const extra = fillDates.length ? `已開放的 ${fillDates.map(shortDay).join("、")} 也會盯，有人退訂就送出訂單。` : "";
+      if (!confirm(`用「${who}」設定每週固定\n${state.venue.name} ${state.category}\n${days}\n${lines}\n\n之後凡是這些星期，都會在當天 ${state.venue.rules.release_time} 開放前自動排上第 ${state.venue.rules.window_days} 天。${extra}付款仍要自己完成。`)) return;
       try {
         showRoutine(await api("/api/routine", json(target({
-          enabled: true, category: state.category, weekdays, targets: named,
+          enabled: true, category: state.category, weekdays, targets: named, fillDates,
         }))), true);
         toast("已套用每週固定。符合的日子會在開放前自動排好");
         loadJobs();
@@ -1690,6 +1795,8 @@
       const last = rows[rows.length - 1];
       renderRoutineTargets([...rows, { courtId: ANY, time: nextStart(last && last.time, "20:00") }]);
     };
+    $("fillAll").onclick = () => setFillDays(true);
+    $("fillNone").onclick = () => setFillDays(false);
     $("routineBtn").onclick = saveRoutine;
     $("routineOff").onclick = clearRoutine;
     $("snipeBtn").onclick = startSnipe;

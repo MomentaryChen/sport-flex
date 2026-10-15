@@ -229,7 +229,14 @@ class WorkerPool:
         venue, worker, category = self._target(account_id, venue_id, category)
         resolved = self._resolve_targets(worker, venue, category, spec["targets"])
         state = worker.set_routine(
-            venue, {"category": category, "weekdays": spec["weekdays"], "targets": resolved}
+            venue,
+            {
+                "category": category,
+                "weekdays": spec["weekdays"],
+                "targets": resolved,
+                "fillDates": spec.get("fillDates") or [],
+                "fillAll": bool(spec.get("fillAll")),
+            },
         )
         return format_routine(venue.display_name, state)
 

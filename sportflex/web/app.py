@@ -104,6 +104,7 @@ class RoutineBody(Target):
     category: str | None = None
     weekdays: list[int] = Field(default_factory=list)
     targets: list[SnipeTarget] = Field(default_factory=list)
+    fillDates: list[str] = Field(default_factory=list)  # open days on those weekdays to watch as well
 
 
 class WatchBody(Target):
@@ -262,6 +263,7 @@ def routine(request: Request, body: RoutineBody):
             "category": body.category or found.categories[0],
             "weekdays": body.weekdays,
             "targets": [item.model_dump() for item in body.targets],
+            "fillDates": body.fillDates,
         }
     return {"ok": True, **worker.set_routine(found, spec)}
 
