@@ -72,6 +72,8 @@ def _no_watch(_spec: dict) -> bool | None:
 LOGIN_DROPPED_WHILE_FIRING = "搶訂中登入失效，請立刻在網頁上重新登入，系統會繼續搶到截止為止。"
 
 
+QUIET_KEEP = 64  # distinct quiet lines remembered before old timers are dropped
+
 Sink = Callable[[str, str, str, dict], None]  # (kind, message, level, data) -> event store
 
 
@@ -82,7 +84,7 @@ class JobLog:
         self.lines: list[str] = []
         self.keep = keep
         self.sink = sink
-        self._quiet_at = 0.0
+        self._quiet_at: dict[str, float] = {}
 
     def note(self, text: str, kind: str = "note", level: str = "info", **data) -> None:
         self.lines.append(f"{time.strftime('%H:%M:%S')} {text}")
@@ -91,10 +93,14 @@ class JobLog:
             self.sink(kind, text, level, data)
 
     def quiet(self, text: str, every: float = 10, kind: str = "status") -> None:
-        """Repeated status lines, at most once per `every` seconds."""
-        if time.time() - self._quiet_at < every:
+        """The same status line at most once per `every` seconds. Each text has its own timer,
+        so a repeating "not released yet" can't hide a different problem."""
+        now = time.time()
+        if now - self._quiet_at.get(text, 0.0) < every:
             return
-        self._quiet_at = time.time()
+        if len(self._quiet_at) >= QUIET_KEEP:
+            self._quiet_at = {key: at for key, at in self._quiet_at.items() if now - at < every}
+        self._quiet_at[text] = now
         self.note(text, kind)
 
 
@@ -794,6 +800,15 @@ class SnipeJob:
             except Exception:
                 self._offset_sec = 0.0
         return self._offset_sec
+
+    def browser_replaced(self) -> None:
+        """The worker reopened Chrome. A parked reserve page is gone, so park again before release."""
+        spec = self.spec
+        if not spec or spec["phase"] not in {"preparing", "ready"}:
+            return
+        self._prepared = False
+        spec["phase"] = "armed"
+        self.log.note("瀏覽器已重開，開搶前會重新停到預約頁", "browser_restarted")
 
     def next_action_in(self, now: datetime) -> float | None:
         """Seconds until the next thing this job must do, so the worker can wake on time."""

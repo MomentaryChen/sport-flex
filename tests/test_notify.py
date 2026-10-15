@@ -7,6 +7,7 @@ from sportflex.core.notify import (
     DiscordNotifier,
     MultiNotifier,
     NtfyNotifier,
+    TelegramNotifier,
     default_notifier,
 )
 
@@ -23,6 +24,64 @@ class Immediate:
 @pytest.fixture
 def inline(monkeypatch):
     monkeypatch.setattr("sportflex.core.notify.threading.Thread", Immediate)
+    slept: list[float] = []
+    monkeypatch.setattr("sportflex.core.notify._sleep", slept.append)
+    return slept
+
+
+def _failing(monkeypatch, errors):
+    """urlopen that raises each error in turn, then succeeds. Returns the call count box."""
+    calls = {"n": 0}
+
+    def urlopen(request, timeout=10):
+        calls["n"] += 1
+        if errors:
+            raise errors.pop(0)
+
+        class Response:
+            def close(self):
+                return None
+
+        return Response()
+
+    monkeypatch.setattr("sportflex.core.notify.urllib.request.urlopen", urlopen)
+    return calls
+
+
+def _http(code: int, retry_after: str | None = None) -> urllib.error.HTTPError:
+    headers = {"Retry-After": retry_after} if retry_after else {}
+    return urllib.error.HTTPError("https://x", code, "err", headers, None)
+
+
+def test_network_error_is_retried_until_it_goes_through(inline, monkeypatch, capsys):
+    calls = _failing(monkeypatch, [urllib.error.URLError("down"), _http(502)])
+    TelegramNotifier("tok", "1").send("✅ 搶到", "請付款")
+    assert calls["n"] == 3
+    assert inline == [2, 5]
+    assert "第 1/4 次" in capsys.readouterr().out
+
+
+def test_rate_limit_waits_for_retry_after(inline, monkeypatch):
+    calls = _failing(monkeypatch, [_http(429, "30")])
+    TelegramNotifier("tok", "1").send("✅ 搶到", "請付款")
+    assert calls["n"] == 2
+    assert inline == [30]
+
+
+def test_client_error_is_not_retried(inline, monkeypatch, capsys):
+    calls = _failing(monkeypatch, [_http(400)])
+    TelegramNotifier("tok", "1").send("✅ 搶到", "請付款")
+    assert calls["n"] == 1
+    assert inline == []
+    assert "Telegram 發送失敗" in capsys.readouterr().out
+
+
+def test_gives_up_after_the_last_retry(inline, monkeypatch, capsys):
+    calls = _failing(monkeypatch, [urllib.error.URLError("down") for _ in range(10)])
+    TelegramNotifier("tok", "1").send("✅ 搶到", "請付款")
+    assert calls["n"] == 4
+    assert inline == [2, 5, 15]
+    assert capsys.readouterr().out.rstrip().endswith("Telegram 發送失敗：<urlopen error down>")
 
 
 def _capture(monkeypatch):

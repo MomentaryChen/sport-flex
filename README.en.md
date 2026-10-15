@@ -65,7 +65,8 @@ Change the short name whenever you like, for example “Court 1” or “Weekday
 - With Telegram configured, captchas and successful bookings are sent there. Add `SPORT_FLEX_TELEGRAM_BOT_TOKEN` and `SPORT_FLEX_TELEGRAM_CHAT_ID` to `.env`.
 - Backup channels: `SPORT_FLEX_DISCORD_WEBHOOK_URL` (a Discord webhook) and `SPORT_FLEX_NTFY_URL` (an ntfy topic URL such as `https://ntfy.sh/your-topic`; add `SPORT_FLEX_NTFY_TOKEN` for a private topic). When set, grab, payment, and logout notices are sent there together with Telegram, so one blocked channel does not hide the alert. Captcha photos stay on Telegram, because that chat can take a reply. ntfy uses priority 4 unless `SPORT_FLEX_NTFY_PRIORITY` is 1–5.
 - `python -m sportflex --help` lists commands to look up courts, slots, and place a booking.
-- Docker: `docker compose -f infra/docker-compose.yml up -d --build`, then open `http://127.0.0.1:8765/`.
+- Docker: `docker compose -f infra/docker-compose.yml up -d --build`, then open `http://127.0.0.1:8765/`. A crashed or unresponsive browser is reopened; if it can't be, the container restarts itself.
+- To reach the UI from other machines (`--host 0.0.0.0`), set `SPORT_FLEX_UI_TOKEN` in `.env`. Open `/?token=…` once and the browser remembers it.
 
 ## Disclaimer
 

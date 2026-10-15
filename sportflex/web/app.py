@@ -1,20 +1,24 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import os
 import queue
+import signal
 import socket
 import threading
 import time
+import urllib.parse
 import webbrowser
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
+from sportflex.core.accounts import load_env
 from sportflex.core.models import Slot
 from sportflex.core.rules import next_release
 from sportflex.core.venue import get_venue
@@ -28,17 +32,80 @@ INDEX = Path(__file__).resolve().parent / "static" / "index.html"
 SHUTDOWN = threading.Event()
 
 
+HEALTH_CHECK_SEC = 30
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     pool = WorkerPool()
     await asyncio.to_thread(pool.start)
     app.state.pool = pool
+    # Docker's restart policy ignores "unhealthy"; only an exit brings the container back.
+    watchdog = None
+    if os.environ.get("SPORT_FLEX_EXIT_WHEN_DEAD") == "1":
+        watchdog = asyncio.create_task(_exit_when_dead(pool, _terminate))
     yield
+    if watchdog:
+        watchdog.cancel()
     print("關閉瀏覽器中…", flush=True)
     await asyncio.to_thread(pool.stop)
 
 
+async def _exit_when_dead(pool: WorkerPool, terminate, interval: float = HEALTH_CHECK_SEC) -> None:
+    while not SHUTDOWN.is_set():
+        health = pool.health()
+        dead = [item for item in health["accounts"] if not item["healthy"]]
+        if dead:
+            names = "、".join(f"{item['id']}（{item['error'] or '已停止'}）" for item in dead)
+            print(f"帳號 {names} 無法使用，結束服務讓容器重啟", flush=True)
+            terminate()
+            return
+        await asyncio.sleep(interval)
+
+
+def _terminate() -> None:
+    os.kill(os.getpid(), signal.SIGTERM)
+
+
 app = FastAPI(title="sport-flex", lifespan=lifespan)
+
+
+TOKEN_COOKIE = "sportflex_token"
+LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+OPEN_PATHS = {"/api/health"}  # the Docker healthcheck has no token
+
+
+@app.middleware("http")
+async def _require_token(request: Request, call_next):
+    """With SPORT_FLEX_UI_TOKEN set, every page and API needs it: ``/?token=…`` once stores a cookie."""
+    expected = _ui_token()
+    if not expected or request.url.path in OPEN_PATHS:
+        return await call_next(request)
+    given = request.query_params.get("token") or ""
+    if _token_ok(given, expected):
+        if request.url.path == "/" and request.method == "GET":
+            response = RedirectResponse("/", status_code=303)
+            response.set_cookie(TOKEN_COOKIE, expected, httponly=True, samesite="strict", max_age=180 * 86400)
+            return response
+        return await call_next(request)
+    header = request.headers.get("authorization") or ""
+    bearer = header[7:] if header.lower().startswith("bearer ") else ""
+    if _token_ok(request.cookies.get(TOKEN_COOKIE) or "", expected) or _token_ok(bearer, expected):
+        return await call_next(request)
+    if request.url.path.startswith("/api/"):
+        return JSONResponse({"ok": False, "error": "需要 token"}, status_code=401)
+    return PlainTextResponse("需要 token：請開 /?token=你設定的 SPORT_FLEX_UI_TOKEN", status_code=401)
+
+
+def _ui_token() -> str:
+    token = getattr(app.state, "ui_token", None)
+    if token is None:
+        token = app.state.ui_token = load_env().get("SPORT_FLEX_UI_TOKEN", "").strip()
+    return token
+
+
+def _token_ok(given: str, expected: str) -> bool:
+    return bool(given) and hmac.compare_digest(given.encode("utf-8"), expected.encode("utf-8"))
 
 
 def pool(request: Request) -> WorkerPool:
@@ -129,6 +196,13 @@ def index():
 @app.get("/api/meta")
 def meta(request: Request):
     return {"ok": True, **pool(request).meta()}
+
+
+@app.get("/api/health")
+def health(request: Request):
+    """503 when an account's browser is gone for good; the Docker healthcheck reads this."""
+    state = pool(request).health()
+    return JSONResponse({"ok": state["healthy"], **state}, status_code=200 if state["healthy"] else 503)
 
 
 @app.get("/api/release")
@@ -372,6 +446,15 @@ def serve(port: int = 8765, host: str = "127.0.0.1", open_browser: bool = True) 
             f"搶場服務聽在 {host}:{port}（本機開啟 {url}，API 文件：{url}docs，Telegram 這台是 {server_label()}）",
             flush=True,
         )
+        if _ui_token():
+            url += "?token=" + urllib.parse.quote(_ui_token())
+            print("網頁需要 token（SPORT_FLEX_UI_TOKEN）；第一次請開帶 ?token= 的網址", flush=True)
+        elif host not in LOOPBACK_HOSTS:
+            print(
+                f"⚠️ 監聽 {host} 但沒有設定 SPORT_FLEX_UI_TOKEN：同網段的人都能看帳號、下訂單。"
+                "建議在 .env 設一組 token。",
+                flush=True,
+            )
         if open_browser:
             threading.Thread(target=_open_when_up, args=(port, url), daemon=True).start()
 

@@ -161,6 +161,13 @@ class WorkerPool:
             ],
         }
 
+    def health(self) -> dict:
+        accounts = [
+            {"id": worker.account.id, "healthy": worker.healthy, "error": worker.startup_error}
+            for worker in self.workers.values()
+        ]
+        return {"healthy": all(item["healthy"] for item in accounts), "accounts": accounts}
+
     def snipes(self) -> list[dict]:
         return [
             job.state()

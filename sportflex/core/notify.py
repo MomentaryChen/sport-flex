@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import re
 import threading
+import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Protocol
@@ -16,6 +18,9 @@ _NTFY_MESSAGE_LIMIT = 4096
 _NTFY_TITLE_LIMIT = 250
 _LINK = re.compile(r"https?://[^\s<>，。、）】\]]+")
 _WEBHOOK_TOKEN = re.compile(r"(api/webhooks/\d+/)[^\s/?#]+")
+RETRY_DELAYS_SEC = (2, 5, 15)  # waits between attempts; each send runs on its own thread
+MAX_RETRY_WAIT_SEC = 60  # cap on a server's Retry-After
+_sleep = time.sleep
 
 
 class Notifier(Protocol):
@@ -175,11 +180,40 @@ def _first_link(text: str) -> str:
     return match.group(0).rstrip(".,;:)]}")
 
 
-def _deliver(request: urllib.request.Request, channel: str) -> None:
+def _deliver(request: urllib.request.Request, channel: str) -> bool:
+    """POST with retries. A payment notice that never arrives costs the booking, so network
+    errors, 429 and 5xx are retried; any other 4xx means the request itself is wrong."""
+    attempts = len(RETRY_DELAYS_SEC) + 1
+    for attempt in range(1, attempts + 1):
+        wait = 0.0
+        retryable = True
+        try:
+            urllib.request.urlopen(request, timeout=10).close()
+            return True
+        except urllib.error.HTTPError as exc:
+            error = exc
+            retryable = exc.code == 429 or exc.code >= 500
+            wait = _retry_after(exc)
+        except Exception as exc:
+            error = exc
+        if not retryable or attempt >= attempts:
+            print(f"[通知] {channel} 發送失敗：{_public_error(error)}", flush=True)
+            return False
+        delay = min(MAX_RETRY_WAIT_SEC, max(RETRY_DELAYS_SEC[attempt - 1], wait))
+        print(
+            f"[通知] {channel} 發送失敗（第 {attempt}/{attempts} 次）：{_public_error(error)}，{delay:g} 秒後重試",
+            flush=True,
+        )
+        _sleep(delay)
+    return False
+
+
+def _retry_after(exc: urllib.error.HTTPError) -> float:
+    raw = (exc.headers or {}).get("Retry-After") if exc.headers is not None else None
     try:
-        urllib.request.urlopen(request, timeout=10).close()
-    except Exception as exc:
-        print(f"[通知] {channel} 發送失敗：{_public_error(exc)}", flush=True)
+        return max(0.0, float(raw)) if raw else 0.0
+    except ValueError:
+        return 0.0
 
 
 def _public_error(exc: Exception) -> str:

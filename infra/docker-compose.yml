@@ -28,6 +28,9 @@ services:
       # `python -m sportflex ui` with the same bot token: the second process
       # refuses to start, and a live clash pauses ordering on both sides.
       SPORT_FLEX_INSTANCE: docker
+      # restart: unless-stopped does not act on "unhealthy". When an account's Chrome can't be
+      # reopened, the app exits instead, and Docker starts a fresh container.
+      SPORT_FLEX_EXIT_WHEN_DEAD: "1"
     ports:
       # The UI has no login of its own; publish on localhost only.
       - "127.0.0.1:${SPORT_FLEX_PORT:-8765}:8765"
@@ -38,7 +41,7 @@ services:
       - sportflex-profiles:/app/.profiles
       - sportflex-browser-profile:/app/.browser-profile   # the default account's profile path in accounts.yaml
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/api/meta', timeout=5)"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/api/health', timeout=5)"]
       interval: 30s
       timeout: 10s
       start_period: 90s
