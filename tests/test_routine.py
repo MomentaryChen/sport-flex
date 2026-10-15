@@ -7,6 +7,9 @@ from sportflex.core.routine import (
     apply_saved_routine,
     build_routine,
     describe_routine,
+    fill_candidates,
+    open_dates,
+    open_days,
     plan_routine,
     skip_wave,
     weekday_token,
@@ -228,7 +231,13 @@ def test_weekly_command_tokens():
         "stop": False,
         "weekdays": [1, 3],
         "targets": [{"court": "", "time": "20:00"}],
+        "fillDates": [],
+        "fillAll": False,
     }
+    assert parse_weekly_args(["二四", "20:00", "補"])["fillAll"] is True
+    picked = parse_weekly_args(["二四", "20:00", "補", "10/20", "10/22"], date(2026, 10, 16))
+    assert picked["fillDates"] == ["2026-10-20", "2026-10-22"]
+    assert picked["fillAll"] is False
     assert parse_weekly_args(["週二", "週四", "A", "19:00"])["targets"] == [{"court": "A", "time": "19:00"}]
     assert parse_weekly_args(["off"]) == {"stop": True}
     with pytest.raises(ValueError, match="星期"):
@@ -251,3 +260,63 @@ def test_format_routine_mentions_the_next_wave():
     assert "每週二、四 20:00 任一場" in armed
     assert "10/27（週二）" in armed
     assert "10/14 06:00 前" in armed
+
+
+def test_candidates_and_picked_open_dates():
+    rules = BookingRules()
+    now = at("2026-10-01T08:00:00")  # Thursday; open through 10/14, 10/15 opens next
+    assert fill_candidates(routine(), rules, now) == ["2026-10-01", "2026-10-06", "2026-10-08", "2026-10-13"]
+    assert open_dates(routine(), rules, now) == []  # nothing picked
+    saved = build_routine(rules, "羽球", [1, 3], [{"time": "20:00"}], fill_dates=["2026-10-08", "2026-10-06", "2026-10-06"])
+    assert saved["fillDates"] == ["2026-10-06", "2026-10-08"]
+    assert open_dates(saved, rules, now) == ["2026-10-06", "2026-10-08"]
+    assert open_dates(saved, rules, at("2026-10-07T08:00:00")) == ["2026-10-08"]  # past days drop out
+    saved["skipDate"] = "2026-10-08"
+    assert "2026-10-08" not in fill_candidates(saved, rules, now)
+    with pytest.raises(ValueError, match="不是選定的星期"):
+        build_routine(rules, "羽球", [1, 3], [{"time": "20:00"}], fill_dates=["2026-10-07"])
+
+
+def test_candidates_before_release_stop_a_day_earlier():
+    rules = BookingRules()
+    mondays = build_routine(rules, "羽球", [0], [{"time": "20:00"}])
+    # Tue 10/13: 10/26 (Mon) opens at 06:00, so it is offered only after release.
+    assert fill_candidates(mondays, rules, at("2026-10-13T05:00:00")) == ["2026-10-19"]
+    assert fill_candidates(mondays, rules, at("2026-10-13T07:00:00")) == ["2026-10-19", "2026-10-26"]
+    assert open_days(rules, at("2026-10-13T07:00:00"))[0] == "2026-10-13"
+    assert open_days(rules, at("2026-10-13T07:00:00"))[-1] == "2026-10-26"
+
+
+def test_worker_fill_leaves_the_watch_day_alone(venue, tmp_path, monkeypatch):
+    monkeypatch.setattr("sportflex.core.storage.SNIPES_DIR", tmp_path / "snipes")
+    monkeypatch.setattr("sportflex.core.storage.ROUTINES_DIR", tmp_path / "routines")
+    from sportflex.core.accounts import Account
+    from sportflex.core.notify import ConsoleNotifier
+    from sportflex.runtime.worker import AccountWorker
+
+    now = at("2026-10-01T08:00:00")
+    picked = ["2026-10-01", "2026-10-06", "2026-10-13"]
+    saved = build_routine(venue.rules, "羽球", [1, 3], [{"time": "20:00"}], fill_dates=picked)
+    RoutineStore(venue.id, "me").save(saved)
+    account = Account(id="me", provider="fake", username_env="U", password_env="P", profile="x")
+    worker = AccountWorker(account, {venue.id: venue}, ConsoleNotifier())
+    worker._apply_routines(now)
+    assert sorted(worker.fills[venue.id].days) == picked
+
+    worker.watch = type("W", (), {"running": True, "venue": venue, "spec": {"date": "2026-10-06"}})()
+    worker._apply_routines(now)
+    assert sorted(worker.fills[venue.id].days) == ["2026-10-01", "2026-10-13"]
+
+
+def test_format_routine_lists_open_days_to_pick():
+    state = {
+        "enabled": True,
+        "label": "每週二、四 20:00 任一場",
+        "due": False,
+        "release": {"targetDate": "2026-10-29", "targetLabel": "10/29（週四）"},
+        "fillCandidates": ["2026-10-20", "2026-10-22"],
+        "fillDates": ["2026-10-22"],
+    }
+    text = format_routine("一號館", state)
+    assert "已開放可盯：10/20（週二）、10/22（週四） ✓" in text
+    assert "補 10/20 10/22" in text

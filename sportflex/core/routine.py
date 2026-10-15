@@ -3,12 +3,13 @@
 People were setting the same Tuesday and Thursday 20:00 snipe by hand every morning.
 A saved routine does that before release: if the day about to open (window day 14)
 falls on a chosen weekday, the snipe is armed with the saved targets.
+`fillDates` picks which of the matching days already open inside the window are watched too.
 """
 
 from __future__ import annotations
 
 import re
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from sportflex.core.rules import ANY_COURT, WEEKDAYS, BookingRules, next_release, validate_targets
 
@@ -20,7 +21,9 @@ LIVE_PHASES = {"preparing", "ready", "firing"}
 _WEEKDAY_MARK = re.compile(r"[、,，/\s]")
 
 
-def build_routine(rules: BookingRules, category: str, weekdays: list, targets: list) -> dict:
+def build_routine(
+    rules: BookingRules, category: str, weekdays: list, targets: list, fill_dates: list | None = None
+) -> dict:
     """Validate a weekly pattern. `weekdays` is Python's Monday=0 .. Sunday=6."""
     days: list[int] = []
     for day in weekdays:
@@ -36,6 +39,17 @@ def build_routine(rules: BookingRules, category: str, weekdays: list, targets: l
     if not days:
         raise ValueError("請至少選一個星期，例如週二、週四")
     cleaned = validate_targets(rules, targets)
+    picked: list[str] = []
+    for item in fill_dates or []:
+        try:
+            day = date.fromisoformat(str(item))
+        except ValueError:
+            raise ValueError(f"日期看不懂：{item}") from None
+        if day.weekday() not in days:
+            raise ValueError(f"{day.month}/{day.day} 不是選定的星期")
+        if day.isoformat() not in picked:
+            picked.append(day.isoformat())
+    picked.sort()
     return {
         "category": category,
         "weekdays": days,
@@ -43,6 +57,7 @@ def build_routine(rules: BookingRules, category: str, weekdays: list, targets: l
             {"courtId": item["courtId"], "name": item["name"], "time": item["time"]} for item in cleaned
         ],
         "skipDate": "",
+        "fillDates": picked,
     }
 
 
@@ -58,6 +73,37 @@ def describe_routine(routine: dict) -> str:
             f"{item.get('name') or ANY_COURT} {item.get('time') or ''}".strip() for item in targets
         )
     return f"每週{days} {slots}".strip()
+
+
+def open_days(rules: BookingRules, now: datetime | None = None) -> list[str]:
+    """Every day already open for booking, today first."""
+    current = now.astimezone(rules.tz) if now else datetime.now(rules.tz)
+    last = date.fromisoformat(next_release(rules, current)["openEnd"])
+    days = []
+    day = current.date()
+    while day <= last:
+        days.append(day.isoformat())
+        day += timedelta(days=1)
+    return days
+
+
+def fill_candidates(routine: dict | None, rules: BookingRules, now: datetime | None = None) -> list[str]:
+    """Open days on the routine's weekdays: what the user can pick to watch. The cancelled wave stays out."""
+    if not routine:
+        return []
+    weekdays = set(_weekday_numbers(routine))
+    skipped = routine.get("skipDate") or ""
+    return [
+        day for day in open_days(rules, now) if date.fromisoformat(day).weekday() in weekdays and day != skipped
+    ]
+
+
+def open_dates(routine: dict | None, rules: BookingRules, now: datetime | None = None) -> list[str]:
+    """The picked days (`fillDates`) that are still open candidates. Past days drop out on their own."""
+    if not routine or not routine.get("targets"):
+        return []
+    picked = set(routine.get("fillDates") or [])
+    return [day for day in fill_candidates(routine, rules, now) if day in picked]
 
 
 def weekday_token(token: str) -> list[int] | None:

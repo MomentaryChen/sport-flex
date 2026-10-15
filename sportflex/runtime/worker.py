@@ -12,6 +12,8 @@ from datetime import date, datetime, timedelta
 
 from sportflex.core.coord import Coordinator
 from sportflex.core.engine import (
+    ACTIVE_PHASES,
+    FillJob,
     SnipeJob,
     WatchJob,
     announce_grab,
@@ -24,7 +26,15 @@ from sportflex.core.events import EventStore, NullEventStore
 from sportflex.core.models import Slot, slot_bounds
 from sportflex.core.notify import Notifier
 from sportflex.core.refund import plan_refund_reminder
-from sportflex.core.routine import apply_saved_routine, build_routine, describe_routine, skip_wave
+from sportflex.core.routine import (
+    apply_saved_routine,
+    build_routine,
+    describe_routine,
+    fill_candidates,
+    open_dates,
+    open_days,
+    skip_wave,
+)
 from sportflex.core.rules import next_release, quota_reason
 from sportflex.core.storage import BookingStore, RoutineStore, WatchStore
 from sportflex.core.venue import Venue
@@ -120,6 +130,11 @@ class AccountWorker:
                 on_watch=lambda spec, venue=venue: self._adopt_watch(venue, spec),
                 coord=coord,
             )
+            for vid, venue in self.venues.items()
+        }
+        # Weekly slots on days already open (the routine's picked fillDates).
+        self.fills = {
+            vid: FillJob(venue, self._record_grab, self._alert, self.events, on_logout=self._logged_out, account_id=account.id)
             for vid, venue in self.venues.items()
         }
         self._routines: dict[str, dict] = {}
@@ -268,6 +283,11 @@ class AccountWorker:
                     self.watch.tick(provider)
                 except Exception as exc:
                     self.watch.log.note(f"盯場出錯：{exc}")
+            for fill in self.fills.values():
+                try:
+                    fill.tick(provider)
+                except Exception as exc:
+                    fill.log.note(f"盯已開放日期出錯：{exc}")
             if not active:  # the snipe checks its own login; keep-alive is for an idle account
                 self._keepalive(provider)
         if self.watch and not self.watch.running:
@@ -907,7 +927,8 @@ class AccountWorker:
         """Save a weekly pattern and arm the upcoming release when it matches.
 
         `routine` is None to turn the pattern off. Saving again clears a skipped wave,
-        so the next matching release is armed immediately.
+        so the next matching release is armed immediately. `fillDates` picks open days
+        to watch as well; `fillAll` picks every open day on the chosen weekdays.
         """
 
         def run(_provider: Provider) -> dict:
@@ -922,10 +943,23 @@ class AccountWorker:
                 category = routine.get("category") or venue.categories[0]
                 if category not in venue.categories:
                     raise ValueError(f"{venue.display_name} 沒有 {category}")
-                saved = build_routine(venue.rules, category, routine.get("weekdays") or [], routine.get("targets") or [])
+                saved = build_routine(
+                    venue.rules,
+                    category,
+                    routine.get("weekdays") or [],
+                    routine.get("targets") or [],
+                    fill_dates=routine.get("fillDates") or [],
+                )
+                candidates = fill_candidates(saved, venue.rules)
+                if routine.get("fillAll"):
+                    saved["fillDates"] = candidates
+                for day in saved["fillDates"]:
+                    if day not in candidates:
+                        raise ValueError(f"{int(day[5:7])}/{int(day[8:10])} 不是已開放的日子")
                 self._routines[venue.id] = saved
                 store.save(saved)
                 apply_saved_routine(job, saved)
+            self._sync_fill(venue.id)
             return self.routine_state(venue)
 
         return self.call(run)
@@ -941,9 +975,13 @@ class AccountWorker:
             "weekdays": [],
             "targets": [],
             "skipDate": "",
+            "fillDates": [],
+            "fillCandidates": [],
+            "openDays": open_days(venue.rules),
             "label": "",
             "due": False,
             "release": release,
+            "fill": self.fills[venue.id].state(),
         }
         if not routine:
             return state
@@ -958,6 +996,8 @@ class AccountWorker:
             weekdays=list(routine.get("weekdays") or []),
             targets=list(routine.get("targets") or []),
             skipDate=routine.get("skipDate") or "",
+            fillDates=open_dates(routine, venue.rules),
+            fillCandidates=fill_candidates(routine, venue.rules),
             label=describe_routine(routine),
             due=weekday in set(routine.get("weekdays") or []) and (routine.get("skipDate") or "") != target,
         )
@@ -974,6 +1014,26 @@ class AccountWorker:
     def _apply_routines(self, now: datetime | None = None) -> None:
         for venue_id, job in self.snipes.items():
             apply_saved_routine(job, self._routines.get(venue_id), now)
+            self._sync_fill(venue_id, now)
+
+    def _sync_fill(self, venue_id: str, now: datetime | None = None) -> None:
+        """Point the open-day watch at the routine's open dates.
+
+        A day the snipe or a manual watch is already working on is left to that job,
+        so the two never race for the same slot.
+        """
+        routine = self._routines.get(venue_id)
+        fill = self.fills[venue_id]
+        dates = open_dates(routine, fill.venue.rules, now)
+        if dates:
+            busy = set()
+            job = self.snipes[venue_id]
+            if job.spec and job.spec.get("phase") in ACTIVE_PHASES:
+                busy.add(job.spec.get("targetDate") or "")
+            if self.watch and self.watch.running and self.watch.venue.id == venue_id:
+                busy.add(self.watch.spec.get("date") or "")
+            dates = [day for day in dates if day not in busy]
+        fill.sync((routine or {}).get("category") or "", (routine or {}).get("targets") or [], dates)
 
     def _remember_routine_skip(self, venue: Venue, job: SnipeJob) -> None:
         updated = skip_wave(self._routines.get(venue.id), job.spec)

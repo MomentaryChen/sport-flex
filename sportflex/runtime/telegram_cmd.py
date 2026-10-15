@@ -9,7 +9,7 @@ from sportflex.core.calendar import calendar_lines
 from sportflex.core.refund import reminder_line
 from sportflex.core.models import Slot, slot_matches
 from sportflex.core.routine import weekday_token
-from sportflex.core.rules import next_release
+from sportflex.core.rules import WEEKDAYS, next_release
 from sportflex.core.snipe_stats import stats_lines
 from sportflex.core.venue import Venue
 
@@ -21,6 +21,7 @@ PERIODS = {
 }
 # A time-window watch stops after one booking unless one of these is present.
 _WATCH_FILL = {"滿", "上限", "訂滿"}
+_WEEKLY_FILL_OPEN = {"補", "補位", "已開放"}
 
 PHASES = {
     "idle": "未設定",
@@ -186,13 +187,25 @@ def parse_snipe_tokens(tokens: list[str]) -> list[dict]:
     return targets
 
 
-def parse_weekly_args(tokens: list[str]) -> dict:
-    """`/weekly 二四 20:00` or `/weekly 週二 週四 A 19:00`. `/weekly off` clears it."""
+def parse_weekly_args(tokens: list[str], today: date | None = None) -> dict:
+    """`/weekly 二四 20:00` or `/weekly 週二 週四 A 19:00`. `/weekly off` clears it.
+
+    Open days to watch as well: ``補`` (also ``補位`` / ``已開放``) picks every one on
+    those weekdays; dates such as ``補 10/20 10/22`` pick just those.
+    """
     if len(tokens) == 1 and tokens[0].casefold() in {"off", "stop", "停", "停止", "停用"}:
         return {"stop": True}
+    fill_all = any(token in _WEEKLY_FILL_OPEN for token in tokens)
+    tokens = [token for token in tokens if token not in _WEEKLY_FILL_OPEN]
+    fill_dates: list[str] = []
     weekdays: list[int] = []
     rest: list[str] = []
     for token in tokens:
+        if looks_like_date(token):
+            day = resolve_date(token, today or date.today())
+            if day not in fill_dates:
+                fill_dates.append(day)
+            continue
         days = weekday_token(token)
         if days is not None:
             for day in days:
@@ -202,7 +215,13 @@ def parse_weekly_args(tokens: list[str]) -> dict:
         rest.append(token)
     if not weekdays:
         raise ValueError("請給星期，例如 /weekly 二四 20:00")
-    return {"stop": False, "weekdays": weekdays, "targets": parse_snipe_tokens(rest)}
+    return {
+        "stop": False,
+        "weekdays": weekdays,
+        "targets": parse_snipe_tokens(rest),
+        "fillDates": fill_dates,
+        "fillAll": fill_all and not fill_dates,
+    }
 
 
 def parse_watch_args(tokens: list[str], today: date) -> dict:
@@ -381,6 +400,7 @@ def format_routine(venue_name: str, state: dict) -> str:
             f"{venue_name} 還沒有每週固定時段\n"
             "設定：/weekly 二四 20:00\n"
             "指定場地：/weekly 二四 A 19:00\n"
+            "連已開放的日子也盯：/weekly 二四 20:00 補（或只挑 補 10/20 10/22）\n"
             "停用：/weekly off"
         )
     lines = [f"{venue_name} {state.get('label') or '每週固定'}"]
@@ -393,8 +413,31 @@ def format_routine(venue_name: str, state: dict) -> str:
         )
     else:
         lines.append(f"下一波 {release.get('targetLabel', '')} 不是選定的星期，到了會再排。")
+    lines.extend(_fill_lines(state))
     lines.append("停用：/weekly off")
     return "\n".join(lines)
+
+
+def _fill_lines(state: dict) -> list[str]:
+    """Open days on the chosen weekdays, with ✓ on the ones being watched."""
+    candidates = state.get("fillCandidates") or []
+    if not candidates:
+        return []
+    picked = set(state.get("fillDates") or [])
+    shown = "、".join(f"{_month_day(day)}{' ✓' if day in picked else ''}" for day in candidates)
+    lines = [f"已開放可盯：{shown}"]
+    if picked:
+        lines.append("打勾的日子有人退訂就送出訂單。")
+    lines.append("挑日子：/weekly ... 補 10/20 10/22；全選：/weekly ... 補")
+    return lines
+
+
+def _month_day(day: str) -> str:
+    try:
+        parsed = date.fromisoformat(day)
+    except ValueError:
+        return day
+    return f"{parsed.month}/{parsed.day}（週{WEEKDAYS[parsed.weekday()]}）"
 
 
 def format_watch(venue_name: str, state: dict) -> str:

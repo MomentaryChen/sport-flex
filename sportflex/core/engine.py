@@ -1107,6 +1107,152 @@ class WatchJob:
         self.on_alert(title, body)
 
 
+class FillJob:
+    """Watch the weekly slots on days that are already open.
+
+    A weekly routine only arms the day about to open. With ``fillDates`` the picked matching
+    days inside the window are watched too, one day per round, and each saved slot is
+    booked once when someone cancels. A slot this account already holds is skipped.
+    """
+
+    def __init__(
+        self,
+        venue: Venue,
+        on_grab: Callable[[dict], None],
+        on_alert: Alert = _no_alert,
+        events: EventStore | None = None,
+        on_logout: Callable[[], None] = _no_logout,
+        account_id: str = "",
+    ) -> None:
+        self.venue = venue
+        self.on_grab = on_grab
+        self.on_alert = on_alert
+        self.on_logout = on_logout
+        self.days: dict[str, dict] = {}  # date -> watch-style spec with the targets still wanted
+        self.log = JobLog(_sink(events or NullEventStore(), account_id, venue.id, "watch"))
+        self._next_at = 0.0
+        self._turn = 0
+
+    @property
+    def running(self) -> bool:
+        return bool(self.days)
+
+    def sync(self, category: str, targets: list[dict], dates: list[str]) -> None:
+        """Watch exactly `dates`. A day keeps its progress while the saved slots stay the same."""
+        wanted = [
+            {"courtId": item.get("courtId") or "", "name": item.get("name") or "", "time": item.get("time") or ""}
+            for item in targets
+        ]
+        days: dict[str, dict] = {}
+        added = []
+        for day in dates:
+            current = self.days.get(day)
+            if current is None or current.get("category") != category or current.get("planned") != wanted:
+                current = {
+                    "category": category,
+                    "date": day,
+                    "planned": wanted,
+                    "targets": [dict(item) for item in wanted],
+                    "booked": [],
+                }
+                added.append(day)
+            days[day] = current
+        self.days = days
+        if added and wanted:
+            self.log.note(f"開始盯已開放的 {'、'.join(_short_date(day) for day in added)} {_watch_label({'targets': wanted})}", "watch_started")
+
+    def state(self) -> dict:
+        return {
+            "running": self.running,
+            "dates": [
+                {"date": day, "targets": [dict(item) for item in spec["targets"]]} for day, spec in sorted(self.days.items())
+            ],
+            "log": self.log.lines[-12:],
+        }
+
+    def tick(self, provider: Provider, now: datetime | None = None) -> None:
+        if not self.days or time.time() < self._next_at:
+            return
+        rules = self.venue.rules
+        self._next_at = time.time() + rules.watch_min_interval_sec
+        order = sorted(self.days)
+        day = order[self._turn % len(order)]
+        self._turn += 1
+        spec = self.days[day]
+        self._drop_started(spec, now)
+        if not spec["targets"]:
+            del self.days[day]
+            return
+        try:
+            board = build_board(provider, self.venue, spec["category"], day)
+        except Throttled as exc:
+            self.log.note(f"盯已開放日期查詢太頻繁：{exc}", "throttled", "warn")
+            self._next_at += rules.throttle_backoff_sec
+            return
+        except NeedLogin as exc:
+            self.log.note(f"盯已開放日期查詢失敗，登入已失效：{exc}", "login_dropped", "warn")
+            self.on_logout()
+            return
+        except Exception as exc:
+            self.log.note(f"盯已開放日期查詢失敗：{exc}", "error", "error")
+            return
+        self._drop_held(spec, board["courts"])
+        if not spec["targets"]:
+            self.log.note(f"{_short_date(day)} 已經有這些時段，不再盯", "watch_remain")
+            del self.days[day]
+            return
+        court_id, slot, blocked = _first_open(board["courts"], spec, rules)
+        if not court_id or slot is None:
+            if blocked:
+                self.log.quiet(f"{_short_date(day)}：{blocked}")
+            return
+        self.log.note(f"{_short_date(day)} 看到空檔 {slot.time}，開始搶", "submit", court=court_id, time=slot.time)
+        try:
+            court = provider.find_court(self.venue, spec["category"], court_id)
+            result = grab(provider, self.venue, court, board["window"]["date"] or day, slot)
+        except NeedLogin as exc:
+            self.log.note(f"搶位失敗，登入已失效：{exc}", "login_dropped", "error")
+            self.on_logout()
+            return
+        except Exception as exc:
+            self.log.note(f"搶位失敗：{exc}", "error", "error")
+            return
+        _remember_booking(spec, court_id, slot)
+        _drop_watch_target(spec, court_id, slot)
+        self.log.note(f"已送到 {result['url']}", "booked", court=result["court"], time=result["time"])
+        if not spec["targets"]:
+            del self.days[day]
+        self.on_grab(result)
+
+    def _drop_held(self, spec: dict, courts: list[dict]) -> None:
+        """A slot this account already holds that day needs no second booking."""
+        held = _combined_holds(courts, spec)
+        starts = {_hold_key(item.get("courtId") or "", item.get("time") or "") for item in held}
+        kept = []
+        for item in spec["targets"]:
+            court = item.get("courtId") or ""
+            if any(start == item.get("time") and (not court or court == held_court) for held_court, start in starts):
+                continue
+            kept.append(item)
+        spec["targets"] = kept
+
+    def _drop_started(self, spec: dict, now: datetime | None) -> None:
+        """Today's slots that already started can't be booked any more."""
+        current = now.astimezone(self.venue.rules.tz) if now else datetime.now(self.venue.rules.tz)
+        if spec["date"] != current.date().isoformat():
+            return
+        clock = current.strftime("%H:%M")
+        spec["targets"] = [item for item in spec["targets"] if (item.get("time") or "") > clock]
+
+
+def _short_date(day: str) -> str:
+    try:
+        parsed = datetime.fromisoformat(day)
+    except ValueError:
+        return day
+    return f"{parsed.month}/{parsed.day}"
+
+
 def _match_start(slots: list[Slot], wanted: str):
     for slot in slots:
         start, _end, hours = slot_bounds(slot.time)

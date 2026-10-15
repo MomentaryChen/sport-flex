@@ -1031,3 +1031,98 @@ def test_watch_until_full_waits_for_a_second_court():
     job.tick(provider)
     assert provider.submitted == [("A", "2026-10-10", "19:00 - 20:00")]
     assert job.running
+
+
+class OpenDaysProvider(FakeProvider):
+    """Every date is released; `open` and `mine` are per date."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.by_date: dict[str, dict[str, list[str]]] = {}
+        self.mine_by_date: dict[str, dict[str, list[str]]] = {}
+        self.queried: list[str] = []
+
+    def availability(self, court, query_date=""):
+        self.queried.append(query_date)
+        self.released_date = query_date
+        self.open = self.by_date.get(query_date, {})
+        self.mine = self.mine_by_date.get(query_date, {})
+        return super().availability(court, query_date)
+
+
+def fill_job(venue, grabs, dates, targets=None):
+    job = engine.FillJob(venue, grabs.append)
+    job.sync("羽球", targets or [{"courtId": "", "name": "任一場", "time": "20:00"}], dates)
+    return job
+
+
+def tick_now(job, provider, now=None):
+    job._next_at = 0
+    job.tick(provider, now or datetime(2026, 10, 1, 8, 0, tzinfo=BookingRules().tz))
+
+
+def test_fill_books_an_open_day_once_and_drops_it(venue):
+    grabs = []
+    job = fill_job(venue, grabs, ["2026-10-06"])
+    provider = OpenDaysProvider()
+    tick_now(job, provider)
+    assert grabs == [] and job.running
+    provider.by_date["2026-10-06"] = {"B": ["20:00"]}
+    tick_now(job, provider)
+    assert provider.submitted == [("B", "2026-10-06", "20:00 - 21:00")]
+    assert len(grabs) == 1
+    assert not job.running
+
+
+def test_fill_takes_turns_between_days(venue):
+    job = fill_job(venue, [], ["2026-10-06", "2026-10-08"])
+    provider = OpenDaysProvider()
+    tick_now(job, provider)
+    tick_now(job, provider)
+    assert provider.queried[0] == "2026-10-06"
+    assert provider.queried[-1] == "2026-10-08"
+
+
+def test_fill_skips_a_slot_already_held(venue):
+    grabs = []
+    job = fill_job(venue, grabs, ["2026-10-06"])
+    provider = OpenDaysProvider()
+    provider.mine_by_date["2026-10-06"] = {"A": ["20:00"]}
+    provider.by_date["2026-10-06"] = {"B": ["20:00"]}
+    tick_now(job, provider)
+    assert provider.submitted == []
+    assert not job.running
+
+
+def test_fill_named_court_still_wanted_when_another_court_is_held(venue):
+    job = fill_job(venue, [], ["2026-10-06"], [{"courtId": "B", "name": "B", "time": "20:00"}])
+    provider = OpenDaysProvider()
+    provider.mine_by_date["2026-10-06"] = {"A": ["20:00"]}
+    tick_now(job, provider)
+    assert job.running
+
+
+def test_fill_drops_todays_started_slots(venue):
+    job = fill_job(venue, [], ["2026-10-01"])
+    provider = OpenDaysProvider()
+    tick_now(job, provider, datetime(2026, 10, 1, 20, 30, tzinfo=BookingRules().tz))
+    assert provider.queried == []
+    assert not job.running
+
+
+def test_fill_sync_keeps_progress_and_resets_on_new_targets(venue):
+    job = fill_job(venue, [], ["2026-10-06"], [
+        {"courtId": "", "name": "任一場", "time": "19:00"},
+        {"courtId": "", "name": "任一場", "time": "20:00"},
+    ])
+    job.days["2026-10-06"]["targets"].pop(0)
+    job.sync("羽球", [
+        {"courtId": "", "name": "任一場", "time": "19:00"},
+        {"courtId": "", "name": "任一場", "time": "20:00"},
+    ], ["2026-10-06", "2026-10-08"])
+    assert [item["time"] for item in job.days["2026-10-06"]["targets"]] == ["20:00"]
+    assert "2026-10-08" in job.days
+    job.sync("羽球", [{"courtId": "", "name": "任一場", "time": "21:00"}], ["2026-10-06"])
+    assert [item["time"] for item in job.days["2026-10-06"]["targets"]] == ["21:00"]
+    job.sync("羽球", [], [])
+    assert not job.running
