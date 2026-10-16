@@ -23,6 +23,7 @@ services:
       - ../.env                 # SPORT_FLEX_* accounts, Telegram, Discord, and ntfy
     environment:
       TZ: Asia/Taipei
+      SPORT_FLEX_ENV: development
       SPORT_FLEX_CHROME_NO_SANDBOX: "1"
       # Shown on captcha photos as [docker · 帳號]. Do not also run
       # `python -m sportflex ui` with the same bot token: the second process
