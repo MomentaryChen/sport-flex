@@ -36,6 +36,7 @@ python3 -m venv .venv
 帳號放在專案根目錄的 `.env`，不要寫進設定檔：
 
 ```bash
+SPORT_FLEX_ENV=development
 SPORT_FLEX_DEFAULT_ACCOUNT=
 SPORT_FLEX_DEFAULT_PASSWORD=
 ```

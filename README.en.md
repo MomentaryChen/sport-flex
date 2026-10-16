@@ -36,6 +36,7 @@ python3 -m venv .venv
 Put the account in `.env` at the project root. Do not put it in the config files:
 
 ```bash
+SPORT_FLEX_ENV=development
 SPORT_FLEX_DEFAULT_ACCOUNT=
 SPORT_FLEX_DEFAULT_PASSWORD=
 ```
