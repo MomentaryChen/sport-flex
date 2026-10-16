@@ -10,7 +10,7 @@ import urllib.request
 from typing import Protocol
 
 from sportflex.core.accounts import load_env
-from sportflex.core.identity import server_label
+from sportflex.core.identity import is_production, server_label
 
 _DISCORD_HOSTS = {"discord.com", "discordapp.com", "canary.discord.com", "ptb.discord.com"}
 _DISCORD_LIMIT = 2000
@@ -132,7 +132,8 @@ def default_notifier() -> Notifier:
     instance = server_label()
     notifiers: list[Notifier] = [ConsoleNotifier()]
     channels: list[str] = []
-    if env.get("SPORT_FLEX_TELEGRAM_BOT_TOKEN") and env.get("SPORT_FLEX_TELEGRAM_CHAT_ID"):
+    # Development stays off Telegram so a test copy never posts into the real chat.
+    if is_production() and env.get("SPORT_FLEX_TELEGRAM_BOT_TOKEN") and env.get("SPORT_FLEX_TELEGRAM_CHAT_ID"):
         channels.append("Telegram")
         notifiers.append(
             TelegramNotifier(

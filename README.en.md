@@ -62,7 +62,8 @@ Change the short name whenever you like, for example “Court 1” or “Weekday
 - A paid booking gets a morning reminder the day before the no-refund cutoff. The cutoff is read from the venue’s cancellation rule, for example “no refund within 2 days of the booking”. You still cancel it yourself at the counter.
 - Watch slots that are already open but full, and place the order when one frees up.
 - One platform can have several accounts, each with its own browser, grabbing at the same time.
-- With Telegram configured, captchas and successful bookings are sent there. Add `SPORT_FLEX_TELEGRAM_BOT_TOKEN` and `SPORT_FLEX_TELEGRAM_CHAT_ID` to `.env`.
+- `SPORT_FLEX_ENV` in `.env` picks the environment: `development` (the default) or `production`. Only `production` places orders, uses Telegram, and takes the one-copy-per-machine lock; `development` looks but never books, so several copies can run at once.
+- With Telegram configured (`production` only), captchas and successful bookings are sent there. Add `SPORT_FLEX_TELEGRAM_BOT_TOKEN` and `SPORT_FLEX_TELEGRAM_CHAT_ID` to `.env`.
 - Backup channels: `SPORT_FLEX_DISCORD_WEBHOOK_URL` (a Discord webhook) and `SPORT_FLEX_NTFY_URL` (an ntfy topic URL such as `https://ntfy.sh/your-topic`; add `SPORT_FLEX_NTFY_TOKEN` for a private topic). When set, grab, payment, and logout notices are sent there together with Telegram, so one blocked channel does not hide the alert. Captcha photos stay on Telegram, because that chat can take a reply. ntfy uses priority 4 unless `SPORT_FLEX_NTFY_PRIORITY` is 1–5.
 - `python -m sportflex --help` lists commands to look up courts, slots, and place a booking.
 - Docker: `docker compose -f infra/docker-compose.yml up -d --build`, then open `http://127.0.0.1:8765/`. A crashed or unresponsive browser is reopened; if it can't be, the container restarts itself.

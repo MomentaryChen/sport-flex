@@ -23,7 +23,7 @@ from sportflex.core.models import Slot
 from sportflex.core.rules import next_release
 from sportflex.core.venue import get_venue
 from sportflex.providers.base import ProviderError
-from sportflex.core.identity import server_label
+from sportflex.core.identity import is_production, server_label
 from sportflex.paths import OUTPUT_DIR
 from sportflex.runtime.instance_lock import InstanceAlreadyRunning, InstanceLock
 from sportflex.runtime.pool import WorkerPool, bot_from_env
@@ -426,14 +426,19 @@ def serve(port: int = 8765, host: str = "127.0.0.1", open_browser: bool = True) 
 
     # Before workers start, so Telegram captchas and /status use this name.
     os.environ.setdefault("SPORT_FLEX_INSTANCE", f"{socket.gethostname()}:{port}")
+    production = is_production()
     # Same machine: the lock refuses a second UI before it opens browsers or touches Telegram.
     # Another machine does not share the file; the bot probe below is that check.
-    lock = InstanceLock(OUTPUT_DIR / "instance.lock")
-    try:
-        lock.acquire()
-    except InstanceAlreadyRunning as exc:
-        print(str(exc), flush=True)
-        return 1
+    # Development places no orders and skips Telegram, so its copies need no lock.
+    lock = InstanceLock(OUTPUT_DIR / "instance.lock") if production else None
+    if lock is not None:
+        try:
+            lock.acquire()
+        except InstanceAlreadyRunning as exc:
+            print(str(exc), flush=True)
+            return 1
+    if not production:
+        print("開發環境（SPORT_FLEX_ENV=development）：不會下單、不連 Telegram，可同時開多份。", flush=True)
     try:
         bot = bot_from_env()
         if bot is not None:
@@ -467,7 +472,8 @@ def serve(port: int = 8765, host: str = "127.0.0.1", open_browser: bool = True) 
         Server(config).run()
         return 0
     finally:
-        lock.release()
+        if lock is not None:
+            lock.release()
 
 
 def _open_when_up(port: int, url: str) -> None:

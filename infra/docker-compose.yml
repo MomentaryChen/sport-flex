@@ -31,6 +31,8 @@ services:
       # restart: unless-stopped does not act on "unhealthy". When an account's Chrome can't be
       # reopened, the app exits instead, and Docker starts a fresh container.
       SPORT_FLEX_EXIT_WHEN_DEAD: "1"
+      # Only production places orders and uses Telegram; development is the default.
+      SPORT_FLEX_ENV: production
     ports:
       # The UI has no login of its own; publish on localhost only.
       - "127.0.0.1:${SPORT_FLEX_PORT:-8765}:8765"

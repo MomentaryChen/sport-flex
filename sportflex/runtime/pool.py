@@ -10,7 +10,7 @@ from sportflex.core.models import Slot, slot_bounds
 from sportflex.core.notify import Notifier, default_notifier
 from sportflex.core.rules import quota_reason
 from sportflex.core.venue import Venue, get_venue, load_venues
-from sportflex.core.identity import server_label
+from sportflex.core.identity import is_production, server_label
 from sportflex.runtime.telegram_bot import TelegramBot
 from sportflex.core.routine import describe_routine
 from sportflex.runtime.telegram_cmd import (
@@ -38,7 +38,12 @@ RESUMED_BODY = "另一個實例已離開，這台繼續搶訂。"
 
 
 def bot_from_env() -> TelegramBot | None:
-    """Telegram re-login is on whenever the bot is configured; SPORT_FLEX_TELEGRAM_RELOGIN=0 turns it off."""
+    """Telegram re-login is on whenever the bot is configured; SPORT_FLEX_TELEGRAM_RELOGIN=0 turns it off.
+
+    Development never polls the bot: only one process may, and that is production's.
+    """
+    if not is_production():
+        return None
     env = load_env()
     token, chat_id = env.get("SPORT_FLEX_TELEGRAM_BOT_TOKEN"), env.get("SPORT_FLEX_TELEGRAM_CHAT_ID")
     if not token or not chat_id or env.get("SPORT_FLEX_TELEGRAM_RELOGIN") == "0":

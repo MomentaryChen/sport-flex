@@ -12,6 +12,7 @@ from sportflex.core.refund import plan_refund_reminder, reminder_line
 from sportflex.core.clock import format_clock_offset
 from sportflex.core.coord import Coordinator, nearest_times
 from sportflex.core.events import EventStore, NullEventStore
+from sportflex.core.identity import is_production
 from sportflex.core.models import Court, Slot, slot_bounds, slot_matches
 from sportflex.core.notify import Notifier
 from sportflex.core.rules import holds_from_board, next_release, quota_reason, slot_end, validate_targets
@@ -34,6 +35,7 @@ RUN_TARGET_KEYS = (
     "attempts",
 )
 MAX_TIME_SHIFTS = 4
+DEV_NO_ORDERS = "目前是開發環境（SPORT_FLEX_ENV=development），不會送出訂單。要下單請設 SPORT_FLEX_ENV=production。"
 
 
 def _public_target(item: dict) -> dict:
@@ -181,6 +183,8 @@ def court_public(court: Court) -> dict:
 
 def grab(provider: Provider, venue: Venue, court: Court, query_date: str, slot: Slot) -> dict:
     """Submit one booking and stop before payment."""
+    if not is_production():
+        raise RuntimeError(DEV_NO_ORDERS)
     snapshot = provider.submit(court, query_date, slot)
     result = {
         "ok": True,
