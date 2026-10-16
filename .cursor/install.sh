@@ -2,6 +2,15 @@
 # Idempotent Cloud Agent build: Python venv, Google Chrome, Playwright system libraries.
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
+export SPORT_FLEX_ENV=development
+
+# PAM sessions read /etc/environment, so agent shells inherit this after a build.
+if ! grep -q '^SPORT_FLEX_ENV=' /etc/environment 2>/dev/null; then
+  echo 'SPORT_FLEX_ENV=development' | sudo tee -a /etc/environment >/dev/null
+fi
+sudo tee /etc/profile.d/sport-flex-env.sh >/dev/null <<'EOF'
+export SPORT_FLEX_ENV=development
+EOF
 
 sudo apt-get update
 sudo apt-get install -y python3 python3-venv python3-pip wget ca-certificates
