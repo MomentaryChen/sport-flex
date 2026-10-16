@@ -13,6 +13,7 @@ from datetime import date, datetime, timedelta
 from sportflex.core.coord import Coordinator
 from sportflex.core.engine import (
     ACTIVE_PHASES,
+    DEV_NO_ORDERS,
     FillJob,
     SnipeJob,
     WatchJob,
@@ -41,7 +42,7 @@ from sportflex.core.venue import Venue
 from sportflex.providers import create_provider
 from sportflex.providers.base import Provider, ProviderError
 from sportflex.runtime.browser import kill_chrome, open_page
-from sportflex.core.identity import login_prefix
+from sportflex.core.identity import is_production, login_prefix
 from sportflex.runtime.captcha_ocr import read_captcha
 from sportflex.runtime.telegram_bot import TelegramBot
 
@@ -149,6 +150,7 @@ class AccountWorker:
         self.bot = bot
         self.coord = coord
         self.booking_blocked = booking_blocked  # another process is polling the same bot
+        self.production = is_production()  # development never places orders
         self.venues = {vid: venue for vid, venue in venues.items() if venue.provider == account.provider}
         self.snipes = {
             vid: SnipeJob(
@@ -485,6 +487,8 @@ class AccountWorker:
         return False
 
     def _orders_blocked(self) -> bool:
+        if not self.production:
+            return True
         return bool(self.booking_blocked and self.booking_blocked())
 
     def _tick(self, provider: Provider) -> None:
@@ -1090,6 +1094,8 @@ class AccountWorker:
         return self.call(run, timeout=60)
 
     def grab(self, venue: Venue, category: str, court_id: str, query_date: str, slot: Slot) -> dict:
+        if not self.production:
+            raise RuntimeError(DEV_NO_ORDERS)
         if self._orders_blocked():
             raise RuntimeError(ORDERS_BLOCKED)
 

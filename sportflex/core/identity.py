@@ -10,6 +10,29 @@ import socket
 
 from sportflex.core.accounts import load_env
 
+PRODUCTION = "production"
+DEVELOPMENT = "development"
+_ENV_ALIASES = {"production": PRODUCTION, "prod": PRODUCTION, "development": DEVELOPMENT, "dev": DEVELOPMENT}
+
+
+def app_env() -> str:
+    """SPORT_FLEX_ENV: ``production`` or ``development`` (the default).
+
+    Only production places orders, talks to Telegram, and takes the one-per-machine
+    lock, so development copies can run side by side without booking twice.
+    """
+    raw = load_env().get("SPORT_FLEX_ENV", "").strip().lower()
+    if not raw:
+        return DEVELOPMENT
+    env = _ENV_ALIASES.get(raw)
+    if env is None:
+        raise ValueError(f"SPORT_FLEX_ENV 必須是 production 或 development（目前是「{raw}」）")
+    return env
+
+
+def is_production() -> bool:
+    return app_env() == PRODUCTION
+
 
 def server_label() -> str:
     """SPORT_FLEX_INSTANCE if set (for example ``docker`` or ``筆電``), otherwise the hostname.
