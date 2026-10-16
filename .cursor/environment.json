@@ -1,7 +1,10 @@
 {
   "name": "sport-flex",
-  "install": "bash .cursor/install.sh",
-  "start": "bash .cursor/start.sh",
+  "env": {
+    "SPORT_FLEX_ENV": "development"
+  },
+  "install": "SPORT_FLEX_ENV=development bash .cursor/install.sh",
+  "start": "SPORT_FLEX_ENV=development bash .cursor/start.sh",
   "ports": [
     {
       "name": "sport-flex",
